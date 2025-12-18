@@ -1,8 +1,8 @@
 use hex;
 use minicbor::{bytes::ByteVec, Decoder};
+use thiserror::Error;
 use ur::ur::Kind;
 use ur_parse_lib::keystone_ur_encoder::probe_encode;
-use thiserror::Error;
 
 const UR_TYPE: &str = "quantus-sign-request";
 const MAX_FRAGMENT_LENGTH: usize = 200;
@@ -96,10 +96,10 @@ mod tests {
     fn test_single_part_roundtrip() {
         // Small payload that fits in 200 bytes
         let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
-        
+
         let encoded_parts = encode(hex_payload).expect("Encoding failed");
         assert_eq!(encoded_parts.len(), 1, "Should be single part");
-        
+
         let decoded_hex = decode(&encoded_parts).expect("Decoding failed");
         assert_eq!(decoded_hex.to_lowercase(), hex_payload.to_lowercase());
     }
@@ -112,10 +112,10 @@ mod tests {
         for i in 0..250 {
             large_payload.push_str(&format!("{:02x}", i));
         }
-        
+
         let encoded_parts = encode(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
-        
+
         // Print parts for debug
         // for (i, part) in encoded_parts.iter().enumerate() {
         //     println!("Part {}: {}", i, part);
