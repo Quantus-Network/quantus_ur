@@ -1,22 +1,37 @@
 use hex;
 use minicbor::{bytes::ByteVec, Decoder};
-use thiserror::Error;
 use ur::ur::Kind;
 use ur_parse_lib::keystone_ur_encoder::probe_encode;
 
 const UR_TYPE: &str = "quantus-sign-request";
 const MAX_FRAGMENT_LENGTH: usize = 200;
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum QuantusUrError {
-    #[error("Hex decoding error: {0}")]
     HexError(hex::FromHexError),
-    #[error("UR error: {0}")]
     UrError(String),
-    #[error("CBOR error: {0}")]
     CborError(String),
-    #[error("Decoding incomplete")]
     Incomplete,
+}
+
+impl std::fmt::Display for QuantusUrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QuantusUrError::HexError(e) => write!(f, "Hex decoding error: {}", e),
+            QuantusUrError::UrError(msg) => write!(f, "UR error: {}", msg),
+            QuantusUrError::CborError(msg) => write!(f, "CBOR error: {}", msg),
+            QuantusUrError::Incomplete => write!(f, "Decoding incomplete"),
+        }
+    }
+}
+
+impl std::error::Error for QuantusUrError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            QuantusUrError::HexError(e) => Some(e),
+            _ => None,
+        }
+    }
 }
 
 pub fn encode(hex_payload: &str) -> Result<Vec<String>, QuantusUrError> {

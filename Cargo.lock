@@ -486,7 +486,6 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "minicbor",
- "thiserror-core",
  "ur",
  "ur-parse-lib",
  "ur-registry",
@@ -675,19 +674,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "thiserror-core"
-version = "1.0.50"
+name = "thiserror"
+version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c001ee18b7e5e3f62cbf58c7fe220119e68d902bb7443179c0c8aef30090e999"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-core-impl",
+ "thiserror-impl",
 ]
 
 [[package]]
-name = "thiserror-core-impl"
-version = "1.0.50"
+name = "thiserror-impl"
+version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4c60d69f36615a077cc7663b9cb8e42275722d23e58a7fa3d2c7f2915d09d04"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -758,7 +757,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "serde",
- "thiserror-core",
+ "thiserror",
  "ur",
 ]
 

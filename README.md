@@ -27,7 +27,7 @@ quantus_ur = { git = "https://github.com/Quantus-Network/quantus_ur.git", tag = 
 
 ## Requirements
 
-This crate requires **nightly Rust** due to dependencies on `thiserror-core` which uses unstable features. A `rust-toolchain` file is included to specify the required toolchain version.
+This crate works with **stable Rust** (1.70+). No nightly toolchain is required.
 
 ## Usage
 
