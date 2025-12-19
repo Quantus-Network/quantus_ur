@@ -103,6 +103,31 @@ pub fn decode(ur_parts: &[String]) -> Result<String, QuantusUrError> {
     }
 }
 
+pub fn is_complete(ur_parts: &[String]) -> bool {
+    if ur_parts.is_empty() {
+        return false;
+    }
+
+    let first = ur_parts[0].to_lowercase();
+    let (kind, _) = match ur::ur::decode(&first) {
+        Ok(result) => result,
+        Err(_) => return false,
+    };
+
+    match kind {
+        Kind::SinglePart => true,
+        Kind::MultiPart => {
+            let mut d = ur::ur::Decoder::default();
+            for part in ur_parts {
+                if d.receive(&part.to_lowercase()).is_err() {
+                    return false;
+                }
+            }
+            d.complete()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +163,61 @@ mod tests {
 
         let decoded_hex = decode(&encoded_parts).expect("Decoding failed");
         assert_eq!(decoded_hex.to_lowercase(), large_payload.to_lowercase());
+    }
+
+    #[test]
+    fn test_is_complete_empty() {
+        assert!(!is_complete(&[]), "Empty parts should be incomplete");
+    }
+
+    #[test]
+    fn test_is_complete_single_part() {
+        let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
+        let encoded_parts = encode(hex_payload).expect("Encoding failed");
+        assert_eq!(encoded_parts.len(), 1, "Should be single part");
+        assert!(is_complete(&encoded_parts), "Single part should be complete");
+    }
+
+    #[test]
+    fn test_is_complete_multi_part_complete() {
+        let mut large_payload = String::with_capacity(500);
+        for i in 0..250 {
+            large_payload.push_str(&format!("{:02x}", i));
+        }
+        let encoded_parts = encode(&large_payload).expect("Encoding failed");
+        assert!(encoded_parts.len() > 1, "Should be multi-part");
+        assert!(is_complete(&encoded_parts), "Complete multi-part should return true");
+    }
+
+    #[test]
+    fn test_is_complete_multi_part_incomplete() {
+        let mut large_payload = String::with_capacity(500);
+        for i in 0..250 {
+            large_payload.push_str(&format!("{:02x}", i));
+        }
+        let encoded_parts = encode(&large_payload).expect("Encoding failed");
+        assert!(encoded_parts.len() > 1, "Should be multi-part");
+        
+        let incomplete_parts = &encoded_parts[..encoded_parts.len() - 1];
+        assert!(!is_complete(incomplete_parts), "Incomplete multi-part should return false");
+    }
+
+    #[test]
+    fn test_is_complete_invalid_ur() {
+        let invalid_parts = vec!["not-a-valid-ur".to_string()];
+        assert!(!is_complete(&invalid_parts), "Invalid UR should return false");
+    }
+
+    #[test]
+    fn test_is_complete_multi_part_partial() {
+        let mut large_payload = String::with_capacity(500);
+        for i in 0..250 {
+            large_payload.push_str(&format!("{:02x}", i));
+        }
+        let encoded_parts = encode(&large_payload).expect("Encoding failed");
+        assert!(encoded_parts.len() > 1, "Should be multi-part");
+        
+        let partial_parts = &encoded_parts[..1];
+        assert!(!is_complete(partial_parts), "Single part of multi-part should return false");
     }
 }
