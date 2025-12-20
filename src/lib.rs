@@ -34,9 +34,8 @@ impl std::error::Error for QuantusUrError {
     }
 }
 
-pub fn encode(hex_payload: &str) -> Result<Vec<String>, QuantusUrError> {
-    let payload = hex::decode(hex_payload).map_err(QuantusUrError::HexError)?;
-    let cbor = minicbor::to_vec(ByteVec::from(payload))
+fn encode_internal(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
+    let cbor = minicbor::to_vec(ByteVec::from(payload.to_vec()))
         .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
 
     let result = probe_encode(&cbor, MAX_FRAGMENT_LENGTH, UR_TYPE.to_string())
@@ -64,7 +63,16 @@ pub fn encode(hex_payload: &str) -> Result<Vec<String>, QuantusUrError> {
     Ok(parts)
 }
 
-pub fn decode(ur_parts: &[String]) -> Result<String, QuantusUrError> {
+pub fn encode_hex(hex_payload: &str) -> Result<Vec<String>, QuantusUrError> {
+    let payload = hex::decode(hex_payload).map_err(QuantusUrError::HexError)?;
+    encode_internal(&payload)
+}
+
+pub fn encode_bytes(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
+    encode_internal(payload)
+}
+
+fn decode_internal(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
     if ur_parts.is_empty() {
         return Err(QuantusUrError::UrError("No UR parts provided".to_string()));
     }
@@ -79,7 +87,7 @@ pub fn decode(ur_parts: &[String]) -> Result<String, QuantusUrError> {
             let bytes = d
                 .bytes()
                 .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
-            Ok(hex::encode(bytes))
+            Ok(bytes.to_vec())
         }
         Kind::MultiPart => {
             let mut d = ur::ur::Decoder::default();
@@ -98,9 +106,18 @@ pub fn decode(ur_parts: &[String]) -> Result<String, QuantusUrError> {
             let bytes = dec
                 .bytes()
                 .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
-            Ok(hex::encode(bytes))
+            Ok(bytes.to_vec())
         }
     }
+}
+
+pub fn decode_hex(ur_parts: &[String]) -> Result<String, QuantusUrError> {
+    let bytes = decode_internal(ur_parts)?;
+    Ok(hex::encode(bytes))
+}
+
+pub fn decode_bytes(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
+    decode_internal(ur_parts)
 }
 
 pub fn is_complete(ur_parts: &[String]) -> bool {
@@ -137,10 +154,10 @@ mod tests {
         // Small payload that fits in 200 bytes
         let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
 
-        let encoded_parts = encode(hex_payload).expect("Encoding failed");
+        let encoded_parts = encode_hex(hex_payload).expect("Encoding failed");
         assert_eq!(encoded_parts.len(), 1, "Should be single part");
 
-        let decoded_hex = decode(&encoded_parts).expect("Decoding failed");
+        let decoded_hex = decode_hex(&encoded_parts).expect("Decoding failed");
         assert_eq!(decoded_hex.to_lowercase(), hex_payload.to_lowercase());
     }
 
@@ -153,7 +170,7 @@ mod tests {
             large_payload.push_str(&format!("{:02x}", i));
         }
 
-        let encoded_parts = encode(&large_payload).expect("Encoding failed");
+        let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
 
         // Print parts for debug
@@ -161,7 +178,7 @@ mod tests {
         //     println!("Part {}: {}", i, part);
         // }
 
-        let decoded_hex = decode(&encoded_parts).expect("Decoding failed");
+        let decoded_hex = decode_hex(&encoded_parts).expect("Decoding failed");
         assert_eq!(decoded_hex.to_lowercase(), large_payload.to_lowercase());
     }
 
@@ -173,7 +190,7 @@ mod tests {
     #[test]
     fn test_is_complete_single_part() {
         let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
-        let encoded_parts = encode(hex_payload).expect("Encoding failed");
+        let encoded_parts = encode_hex(hex_payload).expect("Encoding failed");
         assert_eq!(encoded_parts.len(), 1, "Should be single part");
         assert!(is_complete(&encoded_parts), "Single part should be complete");
     }
@@ -184,7 +201,7 @@ mod tests {
         for i in 0..250 {
             large_payload.push_str(&format!("{:02x}", i));
         }
-        let encoded_parts = encode(&large_payload).expect("Encoding failed");
+        let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
         assert!(is_complete(&encoded_parts), "Complete multi-part should return true");
     }
@@ -195,7 +212,7 @@ mod tests {
         for i in 0..250 {
             large_payload.push_str(&format!("{:02x}", i));
         }
-        let encoded_parts = encode(&large_payload).expect("Encoding failed");
+        let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
         
         let incomplete_parts = &encoded_parts[..encoded_parts.len() - 1];
@@ -214,10 +231,42 @@ mod tests {
         for i in 0..250 {
             large_payload.push_str(&format!("{:02x}", i));
         }
-        let encoded_parts = encode(&large_payload).expect("Encoding failed");
+        let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
         
         let partial_parts = &encoded_parts[..1];
         assert!(!is_complete(partial_parts), "Single part of multi-part should return false");
+    }
+
+    #[test]
+    fn test_encode_bytes_roundtrip() {
+        let binary_payload = b"Hello, Quantus!";
+        let encoded_parts = encode_bytes(binary_payload).expect("Encoding failed");
+        let decoded_bytes = decode_bytes(&encoded_parts).expect("Decoding failed");
+        assert_eq!(decoded_bytes, binary_payload);
+    }
+
+    #[test]
+    fn test_encode_bytes_multi_part() {
+        let mut large_payload = Vec::with_capacity(250);
+        for i in 0..250 {
+            large_payload.push(i as u8);
+        }
+        let encoded_parts = encode_bytes(&large_payload).expect("Encoding failed");
+        assert!(encoded_parts.len() > 1, "Should be multi-part");
+        let decoded_bytes = decode_bytes(&encoded_parts).expect("Decoding failed");
+        assert_eq!(decoded_bytes, large_payload);
+    }
+
+    #[test]
+    fn test_decode_bytes_hex_equivalence() {
+        let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
+        let encoded_parts = encode_hex(hex_payload).expect("Encoding failed");
+        
+        let decoded_hex = decode_hex(&encoded_parts).expect("Decoding failed");
+        let decoded_bytes = decode_bytes(&encoded_parts).expect("Decoding failed");
+        
+        assert_eq!(decoded_hex.to_lowercase(), hex_payload.to_lowercase());
+        assert_eq!(hex::encode(&decoded_bytes), decoded_hex);
     }
 }

@@ -33,14 +33,19 @@ This crate works with **stable Rust** (1.70+). No nightly toolchain is required.
 
 ### Encoding
 
-Convert a hex string into UR-encoded QR code strings:
+Convert a hex string or binary data into UR-encoded QR code strings:
 
 ```rust
-use quantus_ur::encode;
+use quantus_ur::{encode, encode_bytes};
 
+// Encode from hex string
 let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
-
 let ur_parts = encode(hex_payload)?;
+
+// Encode from binary bytes
+let binary_payload = b"Hello, Quantus!";
+let ur_parts = encode_bytes(binary_payload)?;
+
 // ur_parts is a Vec<String> containing one or more UR-encoded strings
 // For small payloads: single QR code
 // For large payloads: multiple QR codes for multi-part transmission
@@ -48,22 +53,25 @@ let ur_parts = encode(hex_payload)?;
 
 ### Decoding
 
-Decode UR-encoded QR code strings back to hex:
+Decode UR-encoded QR code strings back to hex or binary:
 
 ```rust
-use quantus_ur::decode;
+use quantus_ur::{decode, decode_bytes};
 
+// Decode to hex string
 let decoded_hex = decode(&ur_parts)?;
-// Returns the original hex string
+
+// Decode to binary bytes
+let decoded_bytes = decode_bytes(&ur_parts)?;
 ```
 
 ### Complete Example
 
 ```rust
-use quantus_ur::{encode, decode, QuantusUrError};
+use quantus_ur::{encode, decode, encode_bytes, decode_bytes, QuantusUrError};
 
 fn main() -> Result<(), QuantusUrError> {
-    // Encode hex payload to UR QR codes
+    // Example 1: Hex encoding/decoding
     let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
     
     let ur_parts = encode(hex_payload)?;
@@ -72,10 +80,16 @@ fn main() -> Result<(), QuantusUrError> {
         println!("  Part {}: {}", i + 1, part);
     }
     
-    // Decode UR QR codes back to hex
     let decoded_hex = decode(&ur_parts)?;
     assert_eq!(decoded_hex.to_lowercase(), hex_payload.to_lowercase());
     println!("Decoded successfully: {}", decoded_hex);
+    
+    // Example 2: Binary encoding/decoding
+    let binary_payload = b"Hello, Quantus!";
+    let ur_parts = encode_bytes(binary_payload)?;
+    let decoded_bytes = decode_bytes(&ur_parts)?;
+    assert_eq!(decoded_bytes, binary_payload);
+    println!("Binary roundtrip successful");
     
     Ok(())
 }
