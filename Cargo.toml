@@ -5,7 +5,8 @@ edition = "2021"
 
 [dependencies]
 hex = { version = "0.4.3", default-features = true }
-ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", tag = "0.0.52", default-features = false, features = ["std"] }
-ur-parse-lib = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", tag = "0.0.52" }
+ur-registry = { git = "https://git@github.com/KeystoneHQ/keystone-sdk-rust.git", tag = "0.0.52", default-features = false, features = ["core"] }
+ur-parse-lib = { git = "https://git@github.com/KeystoneHQ/keystone-sdk-rust.git", tag = "0.0.52", default-features = false }
 minicbor = { version = "0.19", features = ["alloc"] }
-ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
+ur = { version = "0.3.0", default-features = false }
+thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
