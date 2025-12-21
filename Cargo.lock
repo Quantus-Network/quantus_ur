@@ -43,12 +43,6 @@ checksum = "73290177011694f38ec25e165d0387ab7ea749a4b81cd4c80dae5988229f7a57"
 
 [[package]]
 name = "bitcoin_hashes"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90064b8dee6815a6470d60bad07bbbaee885c0e12d04177138fa3291a01b7bc4"
-
-[[package]]
-name = "bitcoin_hashes"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d7066118b13d4b20b23645932dfb3a81ce7e29f95726c2036fa33cd7b092501"
@@ -493,7 +487,7 @@ dependencies = [
  "hex",
  "minicbor",
  "thiserror-core",
- "ur 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ur",
  "ur-parse-lib",
  "ur-registry",
 ]
@@ -730,22 +724,9 @@ checksum = "9312f7c4f6ff9069b165498234ce8be658059c6728633667c526e27dc2cf1df5"
 [[package]]
 name = "ur"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d777d8b7ba0602c6ce105ebdf8a91c8931044b64985480ee760725dac8ee9918"
-dependencies = [
- "bitcoin_hashes 0.11.0",
- "crc",
- "minicbor",
- "phf",
- "rand_xoshiro",
-]
-
-[[package]]
-name = "ur"
-version = "0.3.0"
 source = "git+https://github.com/KeystoneHQ/ur-rs?tag=0.3.3#81b8bb3b6b3a823128489c81ffee5bb4001ba2ae"
 dependencies = [
- "bitcoin_hashes 0.12.0",
+ "bitcoin_hashes",
  "crc",
  "minicbor",
  "phf",
@@ -758,7 +739,7 @@ version = "0.2.0"
 source = "git+https://git@github.com/KeystoneHQ/keystone-sdk-rust.git?tag=0.0.52#12c4d08dad2e0fb7b7dd05c4c11540dccc2f63bc"
 dependencies = [
  "hex",
- "ur 0.3.0 (git+https://github.com/KeystoneHQ/ur-rs?tag=0.3.3)",
+ "ur",
  "ur-registry",
 ]
 
@@ -778,7 +759,7 @@ dependencies = [
  "prost-types",
  "serde",
  "thiserror-core",
- "ur 0.3.0 (git+https://github.com/KeystoneHQ/ur-rs?tag=0.3.3)",
+ "ur",
 ]
 
 [[package]]

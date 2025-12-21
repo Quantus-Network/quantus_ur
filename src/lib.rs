@@ -1,6 +1,12 @@
+#![no_std]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use hex;
 use minicbor::{bytes::ByteVec, Decoder};
-use ur::ur::Kind;
 use ur_parse_lib::keystone_ur_encoder::probe_encode;
 
 const UR_TYPE: &str = "quantus-sign-request";
@@ -14,22 +20,13 @@ pub enum QuantusUrError {
     Incomplete,
 }
 
-impl std::fmt::Display for QuantusUrError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for QuantusUrError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             QuantusUrError::HexError(e) => write!(f, "Hex decoding error: {}", e),
             QuantusUrError::UrError(msg) => write!(f, "UR error: {}", msg),
             QuantusUrError::CborError(msg) => write!(f, "CBOR error: {}", msg),
             QuantusUrError::Incomplete => write!(f, "Decoding incomplete"),
-        }
-    }
-}
-
-impl std::error::Error for QuantusUrError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            QuantusUrError::HexError(e) => Some(e),
-            _ => None,
         }
     }
 }
@@ -82,14 +79,14 @@ fn decode_internal(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
         ur::ur::decode(&first).map_err(|e| QuantusUrError::UrError(e.to_string()))?;
 
     match kind {
-        Kind::SinglePart => {
+        ur::ur::Kind::SinglePart => {
             let mut d = Decoder::new(&decoded);
             let bytes = d
                 .bytes()
                 .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
             Ok(bytes.to_vec())
         }
-        Kind::MultiPart => {
+        ur::ur::Kind::MultiPart => {
             let mut d = ur::ur::Decoder::default();
             for part in ur_parts {
                 d.receive(&part.to_lowercase())
@@ -132,8 +129,8 @@ pub fn is_complete(ur_parts: &[String]) -> bool {
     };
 
     match kind {
-        Kind::SinglePart => true,
-        Kind::MultiPart => {
+        ur::ur::Kind::SinglePart => true,
+        ur::ur::Kind::MultiPart => {
             let mut d = ur::ur::Decoder::default();
             for part in ur_parts {
                 if d.receive(&part.to_lowercase()).is_err() {
