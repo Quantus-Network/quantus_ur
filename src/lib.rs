@@ -145,6 +145,7 @@ pub fn is_complete(ur_parts: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
 
     #[test]
     fn test_single_part_roundtrip() {
