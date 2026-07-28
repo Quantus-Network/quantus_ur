@@ -101,6 +101,21 @@ fn main() -> Result<(), QuantusUrError> {
 - **Max Fragment Length**: 200 bytes (configurable via `MAX_FRAGMENT_LENGTH`)
 - **Encoding Format**: Payloads are wrapped in CBOR bytestrings before UR encoding
 - **Multi-part Support**: Automatically splits large payloads across multiple QR codes
+- **Max Fragment Count**: 1024 fragments, capping a message at 200 KiB (`MAX_MESSAGE_LENGTH`)
+
+### Inbound Validation
+
+`decode_hex`, `decode_bytes`, and `is_complete` reject anything outside the envelope this
+library encodes, so scanned fragments cannot smuggle in foreign or oversized data:
+
+- Every fragment must carry the `ur:quantus-sign-request/` type prefix
+- A single-part UR is only accepted when it is the only fragment supplied, so a stray
+  single-part frame cannot short-circuit a multi-part scan
+- Multi-part fountain metadata (sequence, fragment count, message length, checksum,
+  fragment size) is bounds-checked and required to agree across all fragments before
+  any fragment reaches the fountain decoder
+- The CBOR wrapper must contain exactly one bytestring — trailing bytes or extra CBOR
+  items are rejected rather than silently ignored
 
 ## References
 

@@ -11,6 +11,26 @@ use ur_parse_lib::keystone_ur_encoder::probe_encode;
 
 const UR_TYPE: &str = "quantus-sign-request";
 const MAX_FRAGMENT_LENGTH: usize = 200;
+/// Maximum number of fountain fragments a message may be split into. Mirrors the
+/// encoding envelope so inbound fragments can't claim an arbitrary fragment count.
+const MAX_FRAGMENT_COUNT: usize = 1024;
+/// Maximum size of a reconstructed CBOR message, derived from the fragment bounds.
+const MAX_MESSAGE_LENGTH: usize = MAX_FRAGMENT_LENGTH * MAX_FRAGMENT_COUNT;
+
+fn ur_error(e: impl core::fmt::Display) -> QuantusUrError {
+    QuantusUrError::UrError(e.to_string())
+}
+
+/// Returns true if `part` (already lowercased) is a `ur:quantus-sign-request/...` URI.
+fn has_expected_ur_type(part: &str) -> bool {
+    let Some(rest) = part.strip_prefix("ur:") else {
+        return false;
+    };
+    let Some((ur_type, _)) = rest.split_once('/') else {
+        return false;
+    };
+    ur_type == UR_TYPE
+}
 
 #[derive(Debug)]
 pub enum QuantusUrError {
@@ -34,6 +54,12 @@ impl core::fmt::Display for QuantusUrError {
 fn encode_internal(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
     let cbor = minicbor::to_vec(ByteVec::from(payload.to_vec()))
         .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
+
+    // Stay inside the envelope the decoder accepts, rather than emitting a
+    // fragment set that `decode_internal` would reject.
+    if cbor.len() > MAX_MESSAGE_LENGTH {
+        return Err(QuantusUrError::UrError("Payload too large".to_string()));
+    }
 
     let result = probe_encode(&cbor, MAX_FRAGMENT_LENGTH, UR_TYPE.to_string())
         .map_err(|e| QuantusUrError::UrError(e.to_string()))?;
@@ -69,24 +95,130 @@ pub fn encode_bytes(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
     encode_internal(payload)
 }
 
+/// Unwraps the CBOR bytestring produced by `encode_internal`, rejecting anything
+/// left over: the wrapper contains exactly one item, so trailing bytes or extra
+/// CBOR items mean the input is non-canonical and must not be accepted.
+fn decode_cbor_payload(cbor: &[u8]) -> Result<Vec<u8>, QuantusUrError> {
+    let mut decoder = Decoder::new(cbor);
+    let bytes = decoder
+        .bytes()
+        .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
+
+    if decoder.position() != cbor.len() {
+        return Err(QuantusUrError::CborError(
+            "Trailing CBOR data after payload bytestring".to_string(),
+        ));
+    }
+
+    Ok(bytes.to_vec())
+}
+
+/// Validates every inbound multipart fragment before it reaches `ur::ur::Decoder`.
+///
+/// The fountain decoder sizes its work from metadata carried inside the fragment,
+/// so a tiny fragment claiming a huge sequence count would otherwise drive large
+/// allocations. Enforce the UR type, the encoder's fragment envelope, and that all
+/// fragments describe the same message.
+fn validate_multipart_parts(ur_parts: &[String]) -> Result<(), QuantusUrError> {
+    if ur_parts.len() > MAX_FRAGMENT_COUNT {
+        return Err(QuantusUrError::UrError(
+            "Too many UR parts provided".to_string(),
+        ));
+    }
+
+    // (sequence_count, message_length, checksum, data_length) shared by all fragments.
+    let mut expected: Option<(usize, usize, u32, usize)> = None;
+
+    for part in ur_parts {
+        let normalized = part.to_lowercase();
+        if !has_expected_ur_type(&normalized) {
+            return Err(QuantusUrError::UrError("Unexpected UR type".to_string()));
+        }
+
+        let (kind, decoded) =
+            ur::ur::decode(&normalized).map_err(|e| QuantusUrError::UrError(e.to_string()))?;
+        if kind != ur::ur::Kind::MultiPart {
+            return Err(QuantusUrError::UrError("Mixed UR part kinds".to_string()));
+        }
+
+        let mut part_decoder = Decoder::new(&decoded);
+        if !matches!(part_decoder.array(), Ok(Some(5))) {
+            return Err(QuantusUrError::UrError(
+                "Invalid multipart fountain part".to_string(),
+            ));
+        }
+
+        let sequence = part_decoder.u32().map_err(ur_error)? as usize;
+        let sequence_count = part_decoder.u32().map_err(ur_error)? as usize;
+        let message_length = part_decoder.u32().map_err(ur_error)? as usize;
+        let checksum = part_decoder.u32().map_err(ur_error)?;
+        let data_length = part_decoder.bytes().map_err(ur_error)?.len();
+
+        // `sequence > sequence_count` would be a mixed fountain part; this crate's
+        // encoder only ever emits the simple parts 1..=sequence_count, so reject
+        // them and keep the decoder's memory bounded by the message length.
+        if sequence == 0
+            || sequence_count == 0
+            || sequence > sequence_count
+            || sequence_count > MAX_FRAGMENT_COUNT
+            || data_length == 0
+            || data_length > MAX_FRAGMENT_LENGTH
+            || message_length == 0
+            || message_length > MAX_MESSAGE_LENGTH
+        {
+            return Err(QuantusUrError::UrError(
+                "Multipart UR exceeds supported bounds".to_string(),
+            ));
+        }
+
+        // All fragments are equally sized, so the message must fill the last one
+        // at least partially and cannot overflow the fragment set.
+        let min_message_length = (sequence_count - 1) * data_length + 1;
+        let max_message_length = sequence_count * data_length;
+        if message_length < min_message_length || message_length > max_message_length {
+            return Err(QuantusUrError::UrError(
+                "Multipart UR metadata is inconsistent".to_string(),
+            ));
+        }
+
+        let metadata = (sequence_count, message_length, checksum, data_length);
+        match expected {
+            None => expected = Some(metadata),
+            Some(seen) if seen == metadata => {}
+            Some(_) => {
+                return Err(QuantusUrError::UrError(
+                    "Multipart UR metadata is inconsistent".to_string(),
+                ))
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn decode_internal(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
     if ur_parts.is_empty() {
         return Err(QuantusUrError::UrError("No UR parts provided".to_string()));
     }
 
     let first = ur_parts[0].to_lowercase();
+    if !has_expected_ur_type(&first) {
+        return Err(QuantusUrError::UrError("Unexpected UR type".to_string()));
+    }
     let (kind, decoded) =
         ur::ur::decode(&first).map_err(|e| QuantusUrError::UrError(e.to_string()))?;
 
     match kind {
         ur::ur::Kind::SinglePart => {
-            let mut d = Decoder::new(&decoded);
-            let bytes = d
-                .bytes()
-                .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
-            Ok(bytes.to_vec())
+            if ur_parts.len() != 1 {
+                return Err(QuantusUrError::UrError(
+                    "Single-part UR must be the only provided part".to_string(),
+                ));
+            }
+            decode_cbor_payload(&decoded)
         }
         ur::ur::Kind::MultiPart => {
+            validate_multipart_parts(ur_parts)?;
             let mut d = ur::ur::Decoder::default();
             for part in ur_parts {
                 d.receive(&part.to_lowercase())
@@ -99,11 +231,7 @@ fn decode_internal(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
                 .message()
                 .map_err(|e| QuantusUrError::UrError(e.to_string()))?
                 .ok_or_else(|| QuantusUrError::UrError("No message".to_string()))?;
-            let mut dec = Decoder::new(&message);
-            let bytes = dec
-                .bytes()
-                .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
-            Ok(bytes.to_vec())
+            decode_cbor_payload(&message)
         }
     }
 }
@@ -123,14 +251,22 @@ pub fn is_complete(ur_parts: &[String]) -> bool {
     }
 
     let first = ur_parts[0].to_lowercase();
+    if !has_expected_ur_type(&first) {
+        return false;
+    }
     let (kind, _) = match ur::ur::decode(&first) {
         Ok(result) => result,
         Err(_) => return false,
     };
 
     match kind {
-        ur::ur::Kind::SinglePart => true,
+        // A single-part UR is only complete when it is the whole input; extra
+        // fragments alongside it mean the collection is inconsistent.
+        ur::ur::Kind::SinglePart => ur_parts.len() == 1,
         ur::ur::Kind::MultiPart => {
+            if validate_multipart_parts(ur_parts).is_err() {
+                return false;
+            }
             let mut d = ur::ur::Decoder::default();
             for part in ur_parts {
                 if d.receive(&part.to_lowercase()).is_err() {
@@ -254,6 +390,201 @@ mod tests {
         assert!(encoded_parts.len() > 1, "Should be multi-part");
         let decoded_bytes = decode_bytes(&encoded_parts).expect("Decoding failed");
         assert_eq!(decoded_bytes, large_payload);
+    }
+
+    /// Re-labels an encoded fragment with a different UR type, as an attacker
+    /// substituting a foreign UR into a scan would.
+    fn rewrite_ur_type(part: &str, new_type: &str) -> String {
+        let lower = part.to_lowercase();
+        let prefix = format!("ur:{}/", UR_TYPE);
+        let body = lower
+            .strip_prefix(&prefix)
+            .expect("encoded part must use the quantus UR type");
+        format!("ur:{}/{}", new_type, body)
+    }
+
+    /// Builds a multipart fragment with arbitrary fountain metadata, bypassing the
+    /// encoder's bounds.
+    fn craft_multipart_part(
+        sequence: u32,
+        sequence_count: u32,
+        message_length: u32,
+        checksum: u32,
+        data: &[u8],
+    ) -> String {
+        let mut cbor = Vec::new();
+        minicbor::Encoder::new(&mut cbor)
+            .array(5)
+            .unwrap()
+            .u32(sequence)
+            .unwrap()
+            .u32(sequence_count)
+            .unwrap()
+            .u32(message_length)
+            .unwrap()
+            .u32(checksum)
+            .unwrap()
+            .bytes(data)
+            .unwrap();
+
+        let body = ur::bytewords::encode(&cbor, ur::bytewords::Style::Minimal);
+        format!("ur:{}/{}-{}/{}", UR_TYPE, sequence, sequence_count, body)
+    }
+
+    fn multi_part_payload() -> Vec<u8> {
+        (0..250).map(|i| i as u8).collect()
+    }
+
+    #[test]
+    fn test_decode_rejects_foreign_ur_type() {
+        let encoded_parts = encode_bytes(b"Hello, Quantus!").expect("Encoding failed");
+        let foreign = vec![rewrite_ur_type(&encoded_parts[0], "crypto-psbt")];
+
+        assert!(
+            matches!(decode_bytes(&foreign), Err(QuantusUrError::UrError(_))),
+            "Foreign UR type should be rejected"
+        );
+        assert!(!is_complete(&foreign), "Foreign UR type should not be complete");
+    }
+
+    #[test]
+    fn test_single_part_must_be_alone() {
+        let attacker_parts = encode_bytes(b"attacker controlled payload").expect("Encoding failed");
+        assert_eq!(attacker_parts.len(), 1, "Should be single part");
+
+        let legitimate_parts = encode_bytes(&multi_part_payload()).expect("Encoding failed");
+        assert!(legitimate_parts.len() > 1, "Should be multi-part");
+
+        let mut mixed_parts = vec![attacker_parts[0].clone()];
+        mixed_parts.extend(legitimate_parts);
+
+        assert!(
+            matches!(decode_bytes(&mixed_parts), Err(QuantusUrError::UrError(_))),
+            "A prepended single-part UR must not short-circuit multipart fragments"
+        );
+        assert!(
+            !is_complete(&mixed_parts),
+            "A prepended single-part UR must not mark a mixed set complete"
+        );
+    }
+
+    #[test]
+    fn test_multi_part_rejects_foreign_fragment() {
+        let legitimate_parts = encode_bytes(&multi_part_payload()).expect("Encoding failed");
+        assert!(legitimate_parts.len() > 1, "Should be multi-part");
+
+        let mut mixed_parts = legitimate_parts.clone();
+        let last = mixed_parts.len() - 1;
+        mixed_parts[last] = rewrite_ur_type(&legitimate_parts[last], "crypto-psbt");
+
+        assert!(
+            matches!(decode_bytes(&mixed_parts), Err(QuantusUrError::UrError(_))),
+            "A foreign-type fragment must be rejected"
+        );
+        assert!(!is_complete(&mixed_parts), "A foreign-type fragment must not be accepted");
+    }
+
+    #[test]
+    fn test_multi_part_rejects_out_of_bounds_metadata() {
+        // Tiny fragment claiming an enormous fragment count: the decoder must reject
+        // it instead of sizing its work from attacker-supplied metadata.
+        let malicious = vec![craft_multipart_part(30_001, 30_000, 1, 0xdead_beef, &[0x41])];
+
+        assert!(
+            matches!(decode_bytes(&malicious), Err(QuantusUrError::UrError(_))),
+            "Out-of-bounds fragment metadata should be rejected before decoding"
+        );
+        assert!(!is_complete(&malicious), "Out-of-bounds fragment should not be complete");
+    }
+
+    #[test]
+    fn test_multi_part_rejects_oversized_fragment_data() {
+        let data = vec![0x41; MAX_FRAGMENT_LENGTH + 1];
+        let message_length = data.len() as u32 * 2;
+        let malicious = vec![craft_multipart_part(1, 2, message_length, 0xdead_beef, &data)];
+
+        assert!(
+            matches!(decode_bytes(&malicious), Err(QuantusUrError::UrError(_))),
+            "Fragments larger than the encoding envelope should be rejected"
+        );
+        assert!(!is_complete(&malicious), "Oversized fragment should not be complete");
+    }
+
+    #[test]
+    fn test_multi_part_rejects_inconsistent_metadata() {
+        let first = craft_multipart_part(1, 2, 300, 0xdead_beef, &[0x41; 200]);
+        let second = craft_multipart_part(2, 2, 300, 0xfeed_face, &[0x42; 200]);
+
+        let parts = vec![first, second];
+        assert!(
+            matches!(decode_bytes(&parts), Err(QuantusUrError::UrError(_))),
+            "Fragments describing different messages should be rejected"
+        );
+        assert!(!is_complete(&parts), "Inconsistent fragments should not be complete");
+    }
+
+    /// UR-encodes raw CBOR, mirroring `encode_internal` but without the canonical
+    /// bytestring wrapper, so tests can craft non-canonical payloads.
+    fn encode_cbor_as_ur(cbor: &[u8]) -> Vec<String> {
+        let result =
+            probe_encode(cbor, MAX_FRAGMENT_LENGTH, UR_TYPE.to_string()).expect("Encoding failed");
+
+        if !result.is_multi_part {
+            return vec![result.data.to_uppercase()];
+        }
+
+        let mut encoder = result.encoder.expect("Multi-part but no encoder returned");
+        let count = encoder.fragment_count();
+        let mut parts = Vec::with_capacity(count);
+        parts.push(result.data.to_uppercase());
+        while parts.len() < count {
+            parts.push(encoder.next_part().expect("Encoding failed").to_uppercase());
+        }
+        parts
+    }
+
+    fn wrap_payload_with_trailing_cbor(payload: &[u8]) -> Vec<u8> {
+        let mut cbor = minicbor::to_vec(ByteVec::from(payload.to_vec())).expect("Encoding failed");
+        let trailing =
+            minicbor::to_vec(ByteVec::from(b"attacker trailer".to_vec())).expect("Encoding failed");
+        cbor.extend_from_slice(&trailing);
+        cbor
+    }
+
+    #[test]
+    fn test_encode_rejects_payload_beyond_decode_envelope() {
+        let oversized = vec![0u8; MAX_MESSAGE_LENGTH + 1];
+        assert!(
+            matches!(encode_bytes(&oversized), Err(QuantusUrError::UrError(_))),
+            "Payloads the decoder can't accept should be rejected at encode time"
+        );
+
+        let largest = vec![0u8; MAX_MESSAGE_LENGTH - 8];
+        let parts = encode_bytes(&largest).expect("Encoding failed");
+        assert!(parts.len() <= MAX_FRAGMENT_COUNT, "Should stay within the fragment bound");
+        assert_eq!(decode_bytes(&parts).expect("Decoding failed"), largest);
+    }
+
+    #[test]
+    fn test_single_part_rejects_trailing_cbor() {
+        let smuggled = encode_cbor_as_ur(&wrap_payload_with_trailing_cbor(b"approved payload"));
+        assert_eq!(smuggled.len(), 1, "Should be single part");
+
+        assert!(
+            matches!(decode_bytes(&smuggled), Err(QuantusUrError::CborError(_))),
+            "CBOR with trailing data should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_multi_part_rejects_trailing_cbor() {
+        let smuggled = encode_cbor_as_ur(&wrap_payload_with_trailing_cbor(&multi_part_payload()));
+        assert!(smuggled.len() > 1, "Should be multi-part");
+
+        assert!(
+            matches!(decode_bytes(&smuggled), Err(QuantusUrError::CborError(_))),
+            "Multipart CBOR with trailing data should be rejected"
+        );
     }
 
     #[test]
