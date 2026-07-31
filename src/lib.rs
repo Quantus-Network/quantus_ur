@@ -10,12 +10,16 @@ use minicbor::{bytes::ByteVec, Decoder};
 use ur_parse_lib::keystone_ur_encoder::probe_encode;
 
 const UR_TYPE: &str = "quantus-sign-request";
-const MAX_FRAGMENT_LENGTH: usize = 200;
+/// Default bytes per QR fragment when the caller doesn't specify one.
+const DEFAULT_FRAGMENT_LENGTH: usize = 200;
+/// Largest fragment the decoder accepts. Screens can show much denser QR codes
+/// than the conservative default, so encoding may go up to this bound.
+const MAX_FRAGMENT_LENGTH: usize = 4096;
 /// Maximum number of fountain fragments a message may be split into. Mirrors the
 /// encoding envelope so inbound fragments can't claim an arbitrary fragment count.
 const MAX_FRAGMENT_COUNT: usize = 1024;
-/// Maximum size of a reconstructed CBOR message, derived from the fragment bounds.
-const MAX_MESSAGE_LENGTH: usize = MAX_FRAGMENT_LENGTH * MAX_FRAGMENT_COUNT;
+/// Maximum size of a reconstructed CBOR message.
+const MAX_MESSAGE_LENGTH: usize = 200 * 1024;
 
 fn ur_error(e: impl core::fmt::Display) -> QuantusUrError {
     QuantusUrError::UrError(e.to_string())
@@ -51,7 +55,16 @@ impl core::fmt::Display for QuantusUrError {
     }
 }
 
-fn encode_internal(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
+fn encode_internal(
+    payload: &[u8],
+    max_fragment_length: usize,
+) -> Result<Vec<String>, QuantusUrError> {
+    if max_fragment_length == 0 || max_fragment_length > MAX_FRAGMENT_LENGTH {
+        return Err(QuantusUrError::UrError(
+            "max_fragment_length out of range".to_string(),
+        ));
+    }
+
     let cbor = minicbor::to_vec(ByteVec::from(payload.to_vec()))
         .map_err(|e| QuantusUrError::CborError(e.to_string()))?;
 
@@ -61,7 +74,7 @@ fn encode_internal(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
         return Err(QuantusUrError::UrError("Payload too large".to_string()));
     }
 
-    let result = probe_encode(&cbor, MAX_FRAGMENT_LENGTH, UR_TYPE.to_string())
+    let result = probe_encode(&cbor, max_fragment_length, UR_TYPE.to_string())
         .map_err(|e| QuantusUrError::UrError(e.to_string()))?;
 
     if !result.is_multi_part {
@@ -87,12 +100,26 @@ fn encode_internal(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
 }
 
 pub fn encode_hex(hex_payload: &str) -> Result<Vec<String>, QuantusUrError> {
+    encode_hex_with_options(hex_payload, DEFAULT_FRAGMENT_LENGTH)
+}
+
+pub fn encode_hex_with_options(
+    hex_payload: &str,
+    max_fragment_length: usize,
+) -> Result<Vec<String>, QuantusUrError> {
     let payload = hex::decode(hex_payload).map_err(QuantusUrError::HexError)?;
-    encode_internal(&payload)
+    encode_internal(&payload, max_fragment_length)
 }
 
 pub fn encode_bytes(payload: &[u8]) -> Result<Vec<String>, QuantusUrError> {
-    encode_internal(payload)
+    encode_bytes_with_options(payload, DEFAULT_FRAGMENT_LENGTH)
+}
+
+pub fn encode_bytes_with_options(
+    payload: &[u8],
+    max_fragment_length: usize,
+) -> Result<Vec<String>, QuantusUrError> {
+    encode_internal(payload, max_fragment_length)
 }
 
 /// Unwraps the CBOR bytestring produced by `encode_internal`, rejecting anything
@@ -392,6 +419,45 @@ mod tests {
         assert_eq!(decoded_bytes, large_payload);
     }
 
+    #[test]
+    fn test_encode_with_options_fragment_count_scales_with_fragment_length() {
+        // ML-DSA-87 signature + public key, the app's largest real payload.
+        let payload: Vec<u8> = (0..7219u32).map(|i| (i % 251) as u8).collect();
+
+        let parts_700 = encode_bytes_with_options(&payload, 700).expect("Encoding failed");
+        assert_eq!(parts_700.len(), 11, "7219 bytes at 700 per fragment");
+        let parts_1500 = encode_bytes_with_options(&payload, 1500).expect("Encoding failed");
+        assert_eq!(parts_1500.len(), 5, "7219 bytes at 1500 per fragment");
+
+        assert_eq!(
+            decode_bytes(&parts_700).expect("Decoding failed"),
+            payload
+        );
+        assert_eq!(
+            decode_bytes(&parts_1500).expect("Decoding failed"),
+            payload
+        );
+        assert!(is_complete(&parts_1500));
+    }
+
+    #[test]
+    fn test_encode_with_options_rejects_out_of_range_fragment_length() {
+        let payload = b"Hello, Quantus!";
+        for bad in [0, MAX_FRAGMENT_LENGTH + 1] {
+            assert!(
+                matches!(
+                    encode_bytes_with_options(payload, bad),
+                    Err(QuantusUrError::UrError(_))
+                ),
+                "fragment length {bad} should be rejected"
+            );
+        }
+        assert!(
+            encode_bytes_with_options(payload, MAX_FRAGMENT_LENGTH).is_ok(),
+            "the decode bound itself should be encodable"
+        );
+    }
+
     /// Re-labels an encoded fragment with a different UR type, as an attacker
     /// substituting a foreign UR into a scan would.
     fn rewrite_ur_type(part: &str, new_type: &str) -> String {
@@ -526,8 +592,8 @@ mod tests {
     /// UR-encodes raw CBOR, mirroring `encode_internal` but without the canonical
     /// bytestring wrapper, so tests can craft non-canonical payloads.
     fn encode_cbor_as_ur(cbor: &[u8]) -> Vec<String> {
-        let result =
-            probe_encode(cbor, MAX_FRAGMENT_LENGTH, UR_TYPE.to_string()).expect("Encoding failed");
+        let result = probe_encode(cbor, DEFAULT_FRAGMENT_LENGTH, UR_TYPE.to_string())
+            .expect("Encoding failed");
 
         if !result.is_multi_part {
             return vec![result.data.to_uppercase()];
