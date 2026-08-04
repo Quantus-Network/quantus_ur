@@ -10,6 +10,8 @@ use minicbor::{bytes::ByteVec, Decoder};
 use ur_parse_lib::keystone_ur_encoder::probe_encode;
 
 const UR_TYPE: &str = "quantus-sign-request";
+/// Full prefix every inbound fragment must carry, including the trailing slash.
+const UR_PREFIX: &str = "ur:quantus-sign-request/";
 /// Default bytes per QR fragment when the caller doesn't specify one.
 const DEFAULT_FRAGMENT_LENGTH: usize = 200;
 /// Largest fragment the decoder accepts. Screens can show much denser QR codes
@@ -25,15 +27,126 @@ fn ur_error(e: impl core::fmt::Display) -> QuantusUrError {
     QuantusUrError::UrError(e.to_string())
 }
 
-/// Returns true if `part` (already lowercased) is a `ur:quantus-sign-request/...` URI.
-fn has_expected_ur_type(part: &str) -> bool {
-    let Some(rest) = part.strip_prefix("ur:") else {
-        return false;
-    };
-    let Some((ur_type, _)) = rest.split_once('/') else {
-        return false;
-    };
-    ur_type == UR_TYPE
+/// The 256 minimal bytewords (first + last letter of each BCR-2020-005 word),
+/// two letters per byte value.
+const MINIMAL_WORDS: &[u8; 512] = b"aeadaoaxaaahamatayasbkbdbnbtbabsbebybgbwbbbzcmchcscfcycwcecackctcxclcpcndkdadsdidedtdrdndwdpdmdldyeheyeoeeecenemetesftfrfnfsfmfhfzfpfwfxfyfefgflfdgagegrgsgtglgwgdgygmgughgohfhghdhkhthphhhlhyhehnhsidiaieihiyioisinimjejzjnjtjljojsjpjkjykpkoktkskkknkgkekikblblalylflslrlplnltloldlelulklgmnmymhmemomumwmdmtmsmknlnyndnsntnnnenboyoeotoxonolospdptpkpypspmplpepfpaprqdqzrerprlrorhrdrkrfryrnrsrtsesasrssskswstspsosgsbsfsntotktitttdtetytltbtstptatnuyuoutueurvtvyvovlvevwvavdvswlwdwmwpwewywswtwnwzwfwkykynylyaytzszoztzczezm";
+
+/// Sentinel for "not a byteword" in the decode table; u16 so the legitimate
+/// byte value 0xFF cannot collide with it.
+const INVALID_WORD: u16 = 0xFFFF;
+
+/// (first letter, last letter) -> byte value, `INVALID_WORD` for non-words.
+const MINIMAL_DECODE_TABLE: [u16; 676] = build_minimal_decode_table();
+
+const fn build_minimal_decode_table() -> [u16; 676] {
+    let mut table = [INVALID_WORD; 676];
+    let mut i = 0;
+    while i < 256 {
+        let c1 = MINIMAL_WORDS[i * 2] - b'a';
+        let c2 = MINIMAL_WORDS[i * 2 + 1] - b'a';
+        table[c1 as usize * 26 + c2 as usize] = i as u16;
+        i += 1;
+    }
+    table
+}
+
+const CRC32_TABLE: [u32; 256] = build_crc32_table();
+
+/// CRC-32 ISO-HDLC (reflected, poly 0xEDB88320), matching the bytewords checksum.
+const fn build_crc32_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            k += 1;
+        }
+        table[i] = c;
+        i += 1;
+    }
+    table
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut c = !0u32;
+    for &b in data {
+        c = CRC32_TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
+    }
+    !c
+}
+
+/// Decodes minimal-style bytewords, verifying and stripping the trailing CRC-32
+/// checksum. Accepts upper- and lowercase, so scanned fragments need no
+/// normalization pass. Table lookups replace the dependency's per-word phf hash.
+fn decode_minimal_bytewords(encoded: &str) -> Result<Vec<u8>, QuantusUrError> {
+    let bytes = encoded.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return Err(QuantusUrError::UrError(
+            "Invalid bytewords length".to_string(),
+        ));
+    }
+
+    let mut data = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let c1 = pair[0].to_ascii_lowercase().wrapping_sub(b'a');
+        let c2 = pair[1].to_ascii_lowercase().wrapping_sub(b'a');
+        let value = if c1 < 26 && c2 < 26 {
+            MINIMAL_DECODE_TABLE[c1 as usize * 26 + c2 as usize]
+        } else {
+            INVALID_WORD
+        };
+        if value == INVALID_WORD {
+            return Err(QuantusUrError::UrError("Invalid byteword".to_string()));
+        }
+        data.push(value as u8);
+    }
+
+    if data.len() < 4 {
+        return Err(QuantusUrError::UrError(
+            "Invalid bytewords checksum".to_string(),
+        ));
+    }
+    let payload_len = data.len() - 4;
+    let (payload, checksum) = data.split_at(payload_len);
+    if crc32(payload).to_be_bytes() != checksum {
+        return Err(QuantusUrError::UrError(
+            "Invalid bytewords checksum".to_string(),
+        ));
+    }
+    data.truncate(payload_len);
+    Ok(data)
+}
+
+/// Decodes one `ur:quantus-sign-request/...` fragment into its kind and CBOR
+/// payload, equivalent to `ur::ur::decode` but without lowercasing the input or
+/// hashing every byteword.
+fn decode_ur_part(part: &str) -> Result<(ur::ur::Kind, Vec<u8>), QuantusUrError> {
+    let head = part.get(..UR_PREFIX.len()).unwrap_or("");
+    if !head.eq_ignore_ascii_case(UR_PREFIX) {
+        return Err(QuantusUrError::UrError("Unexpected UR type".to_string()));
+    }
+    let body = &part[UR_PREFIX.len()..];
+
+    match body.rsplit_once('/') {
+        None => Ok((
+            ur::ur::Kind::SinglePart,
+            decode_minimal_bytewords(body)?,
+        )),
+        Some((indices, payload)) => {
+            let Some((index, index_total)) = indices.split_once('-') else {
+                return Err(QuantusUrError::UrError("Invalid indices".to_string()));
+            };
+            if index.parse::<u16>().is_err() || index_total.parse::<u16>().is_err() {
+                return Err(QuantusUrError::UrError("Invalid indices".to_string()));
+            }
+            Ok((
+                ur::ur::Kind::MultiPart,
+                decode_minimal_bytewords(payload)?,
+            ))
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -147,35 +260,18 @@ fn decode_cbor_payload(cbor: &[u8]) -> Result<Vec<u8>, QuantusUrError> {
     Ok(bytes.to_vec())
 }
 
-/// Validates every inbound multipart fragment before it reaches `ur::ur::Decoder`.
+/// Validates every inbound multipart fragment before it reaches the fountain decoder.
 ///
 /// The fountain decoder sizes its work from metadata carried inside the fragment,
 /// so a tiny fragment claiming a huge sequence count would otherwise drive large
-/// allocations. Enforce the UR type, the encoder's fragment envelope, and that all
-/// fragments describe the same message.
-fn validate_multipart_parts(ur_parts: &[String]) -> Result<(), QuantusUrError> {
-    if ur_parts.len() > MAX_FRAGMENT_COUNT {
-        return Err(QuantusUrError::UrError(
-            "Too many UR parts provided".to_string(),
-        ));
-    }
-
+/// allocations. Enforce the encoder's fragment envelope and that all fragments
+/// describe the same message.
+fn validate_multipart_parts(decoded_parts: &[Vec<u8>]) -> Result<(), QuantusUrError> {
     // (sequence_count, message_length, checksum, data_length) shared by all fragments.
     let mut expected: Option<(usize, usize, u32, usize)> = None;
 
-    for part in ur_parts {
-        let normalized = part.to_lowercase();
-        if !has_expected_ur_type(&normalized) {
-            return Err(QuantusUrError::UrError("Unexpected UR type".to_string()));
-        }
-
-        let (kind, decoded) =
-            ur::ur::decode(&normalized).map_err(|e| QuantusUrError::UrError(e.to_string()))?;
-        if kind != ur::ur::Kind::MultiPart {
-            return Err(QuantusUrError::UrError("Mixed UR part kinds".to_string()));
-        }
-
-        let mut part_decoder = Decoder::new(&decoded);
+    for decoded in decoded_parts {
+        let mut part_decoder = Decoder::new(decoded);
         if !matches!(part_decoder.array(), Ok(Some(5))) {
             return Err(QuantusUrError::UrError(
                 "Invalid multipart fountain part".to_string(),
@@ -230,17 +326,20 @@ fn validate_multipart_parts(ur_parts: &[String]) -> Result<(), QuantusUrError> {
     Ok(())
 }
 
-fn decode_internal(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
+/// Fragments normalized, UR-decoded, and validated, ready for final assembly.
+enum PreparedParts {
+    Single(Vec<u8>),
+    Multi(Vec<Vec<u8>>),
+}
+
+/// UR-decodes every fragment exactly once and, for multipart input, validates
+/// all fountain metadata before anything reaches the fountain decoder.
+fn prepare_parts(ur_parts: &[String]) -> Result<PreparedParts, QuantusUrError> {
     if ur_parts.is_empty() {
         return Err(QuantusUrError::UrError("No UR parts provided".to_string()));
     }
 
-    let first = ur_parts[0].to_lowercase();
-    if !has_expected_ur_type(&first) {
-        return Err(QuantusUrError::UrError("Unexpected UR type".to_string()));
-    }
-    let (kind, decoded) =
-        ur::ur::decode(&first).map_err(|e| QuantusUrError::UrError(e.to_string()))?;
+    let (kind, decoded) = decode_ur_part(&ur_parts[0])?;
 
     match kind {
         ur::ur::Kind::SinglePart => {
@@ -249,21 +348,55 @@ fn decode_internal(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
                     "Single-part UR must be the only provided part".to_string(),
                 ));
             }
-            decode_cbor_payload(&decoded)
+            Ok(PreparedParts::Single(decoded))
         }
         ur::ur::Kind::MultiPart => {
-            validate_multipart_parts(ur_parts)?;
-            let mut d = ur::ur::Decoder::default();
-            for part in ur_parts {
-                d.receive(&part.to_lowercase())
-                    .map_err(|e| QuantusUrError::UrError(e.to_string()))?;
+            if ur_parts.len() > MAX_FRAGMENT_COUNT {
+                return Err(QuantusUrError::UrError(
+                    "Too many UR parts provided".to_string(),
+                ));
             }
+
+            let mut decoded_parts = Vec::with_capacity(ur_parts.len());
+            decoded_parts.push(decoded);
+            for part in &ur_parts[1..] {
+                let (kind, decoded) = decode_ur_part(part)?;
+                if kind != ur::ur::Kind::MultiPart {
+                    return Err(QuantusUrError::UrError("Mixed UR part kinds".to_string()));
+                }
+                decoded_parts.push(decoded);
+            }
+
+            validate_multipart_parts(&decoded_parts)?;
+            Ok(PreparedParts::Multi(decoded_parts))
+        }
+    }
+}
+
+/// Feeds validated fountain-part CBOR into the fountain decoder, one part at a
+/// time. `ur::ur::Decoder::receive` would re-decode each fragment from its
+/// string form, so go through the public `fountain::Decoder` + `minicbor`
+/// `Decode` impl of `Part` instead.
+fn assemble_message(decoded_parts: &[Vec<u8>]) -> Result<ur::fountain::Decoder, QuantusUrError> {
+    let mut d = ur::fountain::Decoder::default();
+    for decoded in decoded_parts {
+        let part: ur::fountain::Part = minicbor::decode(decoded).map_err(ur_error)?;
+        d.receive(part).map_err(ur_error)?;
+    }
+    Ok(d)
+}
+
+fn decode_internal(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
+    match prepare_parts(ur_parts)? {
+        PreparedParts::Single(decoded) => decode_cbor_payload(&decoded),
+        PreparedParts::Multi(decoded_parts) => {
+            let d = assemble_message(&decoded_parts)?;
             if !d.complete() {
                 return Err(QuantusUrError::Incomplete);
             }
             let message = d
                 .message()
-                .map_err(|e| QuantusUrError::UrError(e.to_string()))?
+                .map_err(ur_error)?
                 .ok_or_else(|| QuantusUrError::UrError("No message".to_string()))?;
             decode_cbor_payload(&message)
         }
@@ -280,35 +413,15 @@ pub fn decode_bytes(ur_parts: &[String]) -> Result<Vec<u8>, QuantusUrError> {
 }
 
 pub fn is_complete(ur_parts: &[String]) -> bool {
-    if ur_parts.is_empty() {
-        return false;
-    }
-
-    let first = ur_parts[0].to_lowercase();
-    if !has_expected_ur_type(&first) {
-        return false;
-    }
-    let (kind, _) = match ur::ur::decode(&first) {
-        Ok(result) => result,
-        Err(_) => return false,
-    };
-
-    match kind {
-        // A single-part UR is only complete when it is the whole input; extra
-        // fragments alongside it mean the collection is inconsistent.
-        ur::ur::Kind::SinglePart => ur_parts.len() == 1,
-        ur::ur::Kind::MultiPart => {
-            if validate_multipart_parts(ur_parts).is_err() {
-                return false;
-            }
-            let mut d = ur::ur::Decoder::default();
-            for part in ur_parts {
-                if d.receive(&part.to_lowercase()).is_err() {
-                    return false;
-                }
-            }
-            d.complete()
-        }
+    match prepare_parts(ur_parts) {
+        // A single-part UR is only complete when it is the whole input, which
+        // `prepare_parts` already enforced.
+        Ok(PreparedParts::Single(_)) => true,
+        Ok(PreparedParts::Multi(decoded_parts)) => match assemble_message(&decoded_parts) {
+            Ok(d) => d.complete(),
+            Err(_) => false,
+        },
+        Err(_) => false,
     }
 }
 
@@ -327,6 +440,72 @@ mod tests {
 
         let decoded_hex = decode_hex(&encoded_parts).expect("Decoding failed");
         assert_eq!(decoded_hex.to_lowercase(), hex_payload.to_lowercase());
+    }
+
+    #[test]
+    fn test_crc32_known_vector() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn test_minimal_bytewords_all_words() {
+        for i in 0..256usize {
+            // Route byte `i` through the dependency's encoder so the checksum
+            // is real, then decode with the fast table.
+            let encoded = ur::bytewords::encode(&[i as u8], ur::bytewords::Style::Minimal);
+            let decoded = decode_minimal_bytewords(&encoded).expect("decode");
+            assert_eq!(decoded, vec![i as u8], "word index {i}");
+            // Case-insensitivity: same result from uppercase input.
+            let decoded_upper = decode_minimal_bytewords(&encoded.to_ascii_uppercase()).expect("decode");
+            assert_eq!(decoded_upper, vec![i as u8], "word index {i} uppercase");
+        }
+    }
+
+    #[test]
+    fn test_decode_ur_part_matches_dependency() {
+        // Single- and multi-part, upper- and lowercase: identical results.
+        let payloads: Vec<Vec<u8>> = vec![
+            b"Hello, Quantus!".to_vec(),
+            multi_part_payload(),
+            (0..7219u32).map(|i| (i % 251) as u8).collect(),
+        ];
+        for payload in payloads {
+            for parts in [
+                encode_bytes(&payload).expect("encode"),
+                encode_bytes_with_options(&payload, 700).expect("encode"),
+            ] {
+            for part in &parts {
+                let lower = part.to_ascii_lowercase();
+                let expected = ur::ur::decode(&lower).expect("dependency decode");
+                let actual = decode_ur_part(&lower).expect("fast decode");
+                assert_eq!(expected.0, actual.0);
+                assert_eq!(expected.1, actual.1);
+                // The dependency requires lowercase; ours must accept the
+                // uppercase scan equally.
+                let actual_upper = decode_ur_part(part).expect("fast decode uppercase");
+                assert_eq!(expected.0, actual_upper.0);
+                assert_eq!(expected.1, actual_upper.1);
+            }
+            }
+        }
+    }
+
+    #[test]
+    fn test_decode_ur_part_rejects_bad_checksum_and_indices() {
+        let parts = encode_bytes(b"Hello, Quantus!").expect("encode");
+        let part = parts[0].to_ascii_lowercase();
+
+        // Flip a character in the bytewords body: checksum must catch it.
+        let mut corrupted = part.clone();
+        let last = corrupted.len() - 1;
+        let flipped = if corrupted.as_bytes()[last] == b'a' { b'e' } else { b'a' };
+        corrupted.replace_range(last.., core::str::from_utf8(&[flipped]).unwrap());
+        assert!(decode_ur_part(&corrupted).is_err());
+
+        // Malformed sequence indices.
+        assert!(decode_ur_part("ur:quantus-sign-request/1-1a/aeae").is_err());
+        assert!(decode_ur_part("ur:quantus-sign-request/aeae").is_err());
+        assert!(decode_ur_part("ur:crypto-psbt/aeaeaeae").is_err());
     }
 
     #[test]
