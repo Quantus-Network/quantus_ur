@@ -9,6 +9,13 @@ ur-parse-lib = { version = "1.0.6", default-features = false }
 ur = { package = "keystone-ur", version = "0.1.1", default-features = false }
 minicbor = { version = "0.19", default-features = false, features = ["alloc"] }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "decode"
+harness = false
+
 [features]
 default = ["std"]
 std = ["ur-parse-lib/std"]
