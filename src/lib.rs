@@ -85,7 +85,14 @@ fn encode_internal(
         .encoder
         .ok_or_else(|| QuantusUrError::UrError("Multi-part but no encoder returned".to_string()))?;
 
+    // Reject before materializing parts: the decoder caps fragment sets at
+    // MAX_FRAGMENT_COUNT, so a larger count here could never round-trip.
     let count = encoder.fragment_count();
+    if count > MAX_FRAGMENT_COUNT {
+        return Err(QuantusUrError::UrError(
+            "Fragment count exceeds supported maximum".to_string(),
+        ));
+    }
     let mut parts = Vec::with_capacity(count);
     parts.push(result.data.to_uppercase());
 
@@ -456,6 +463,27 @@ mod tests {
             encode_bytes_with_options(payload, MAX_FRAGMENT_LENGTH).is_ok(),
             "the decode bound itself should be encodable"
         );
+    }
+
+    #[test]
+    fn test_encode_with_options_rejects_fragment_count_beyond_decoder_bound() {
+        // 1,025 bytes at 1 byte per fragment would need 1,028 parts, beyond the
+        // decoder's MAX_FRAGMENT_COUNT envelope.
+        let payload = vec![0x42; 1_025];
+        assert!(
+            matches!(
+                encode_bytes_with_options(&payload, 1),
+                Err(QuantusUrError::UrError(_))
+            ),
+            "Fragment counts beyond the decoder's bound must be rejected at encode time"
+        );
+
+        // A small fragment length that stays within the bound still round-trips.
+        let payload = multi_part_payload();
+        let parts = encode_bytes_with_options(&payload, 50).expect("Encoding failed");
+        assert!(parts.len() <= MAX_FRAGMENT_COUNT);
+        assert_eq!(decode_bytes(&parts).expect("Decoding failed"), payload);
+        assert!(is_complete(&parts));
     }
 
     /// Re-labels an encoded fragment with a different UR type, as an attacker
