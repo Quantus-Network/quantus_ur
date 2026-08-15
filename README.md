@@ -109,6 +109,10 @@ fn main() -> Result<(), QuantusUrError> {
 library encodes, so scanned fragments cannot smuggle in foreign or oversized data:
 
 - Every fragment must carry the `ur:quantus-sign-request/` type prefix
+- Fragment strings are rejected by length before anything is allocated or decoded:
+  a single-part body may not exceed the 200 KiB message envelope, and a multipart
+  fragment payload may not exceed the 4096-byte fragment envelope (plus CBOR/CRC
+  overhead), so oversized QR codes error out instead of being decoded
 - A single-part UR is only accepted when it is the only fragment supplied, so a stray
   single-part frame cannot short-circuit a multi-part scan
 - Multi-part fountain metadata (sequence, fragment count, message length, checksum,
@@ -116,6 +120,23 @@ library encodes, so scanned fragments cannot smuggle in foreign or oversized dat
   any fragment reaches the fountain decoder
 - The CBOR wrapper must contain exactly one bytestring — trailing bytes or extra CBOR
   items are rejected rather than silently ignored
+
+## Fuzzing
+
+The `fuzz/` workspace contains [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets
+for the decoding attack surface (scanned QR fragments are untrusted input):
+
+- `decode_parts`: arbitrary strings into `decode_bytes` / `decode_hex` / `is_complete`
+- `moving_parts`: animated-scan scenarios — legitimate encodings mutated with corrupted,
+  dropped, duplicated, reordered, re-labeled, and crafted-metadata frames
+- `roundtrip`: arbitrary payloads must round-trip byte-for-byte or fail with an error
+
+Run with (AddressSanitizer is broken on some macOS versions, hence `--sanitizer none`):
+
+```sh
+cargo install cargo-fuzz
+cargo fuzz run --sanitizer none moving_parts
+```
 
 ## References
 
