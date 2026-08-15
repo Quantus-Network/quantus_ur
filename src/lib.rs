@@ -9,6 +9,10 @@ use hex;
 use minicbor::{bytes::ByteVec, Decoder};
 use ur_parse_lib::keystone_ur_encoder::probe_encode;
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod test_helpers;
+
 const UR_TYPE: &str = "quantus-sign-request";
 /// Full prefix every inbound fragment must carry, including the trailing slash.
 const UR_PREFIX: &str = "ur:quantus-sign-request/";
@@ -450,6 +454,7 @@ pub fn is_complete(ur_parts: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{craft_multipart_part, rewrite_ur_type};
     use alloc::format;
 
     #[test]
@@ -687,43 +692,8 @@ mod tests {
         assert!(is_complete(&parts));
     }
 
-    /// Re-labels an encoded fragment with a different UR type, as an attacker
-    /// substituting a foreign UR into a scan would.
-    fn rewrite_ur_type(part: &str, new_type: &str) -> String {
-        let lower = part.to_lowercase();
-        let prefix = format!("ur:{}/", UR_TYPE);
-        let body = lower
-            .strip_prefix(&prefix)
-            .expect("encoded part must use the quantus UR type");
-        format!("ur:{}/{}", new_type, body)
-    }
-
-    /// Builds a multipart fragment with arbitrary fountain metadata, bypassing the
-    /// encoder's bounds.
-    fn craft_multipart_part(
-        sequence: u32,
-        sequence_count: u32,
-        message_length: u32,
-        checksum: u32,
-        data: &[u8],
-    ) -> String {
-        let mut cbor = Vec::new();
-        minicbor::Encoder::new(&mut cbor)
-            .array(5)
-            .unwrap()
-            .u32(sequence)
-            .unwrap()
-            .u32(sequence_count)
-            .unwrap()
-            .u32(message_length)
-            .unwrap()
-            .u32(checksum)
-            .unwrap()
-            .bytes(data)
-            .unwrap();
-
-        let body = ur::bytewords::encode(&cbor, ur::bytewords::Style::Minimal);
-        format!("ur:{}/{}-{}/{}", UR_TYPE, sequence, sequence_count, body)
+    fn relabel(part: &str, new_type: &str) -> String {
+        rewrite_ur_type(part, new_type).expect("encoded part must use the quantus UR type")
     }
 
     fn multi_part_payload() -> Vec<u8> {
@@ -733,7 +703,7 @@ mod tests {
     #[test]
     fn test_decode_rejects_foreign_ur_type() {
         let encoded_parts = encode_bytes(b"Hello, Quantus!").expect("Encoding failed");
-        let foreign = vec![rewrite_ur_type(&encoded_parts[0], "crypto-psbt")];
+        let foreign = vec![relabel(&encoded_parts[0], "crypto-psbt")];
 
         assert!(
             matches!(decode_bytes(&foreign), Err(QuantusUrError::UrError(_))),
@@ -770,7 +740,7 @@ mod tests {
 
         let mut mixed_parts = legitimate_parts.clone();
         let last = mixed_parts.len() - 1;
-        mixed_parts[last] = rewrite_ur_type(&legitimate_parts[last], "crypto-psbt");
+        mixed_parts[last] = relabel(&legitimate_parts[last], "crypto-psbt");
 
         assert!(
             matches!(decode_bytes(&mixed_parts), Err(QuantusUrError::UrError(_))),
@@ -811,7 +781,10 @@ mod tests {
         // length gate must reject it before decoding.
         let oversized = vec![0u8; MAX_MESSAGE_LENGTH + 1];
         let body = ur::bytewords::encode(&oversized, ur::bytewords::Style::Minimal);
+        assert!(body.len() > MAX_SINGLE_BODY_LENGTH);
         let part = format!("ur:{}/{}", UR_TYPE, body);
+        // Without the gate these bytewords decode cleanly, so the error proves it fired.
+        assert!(decode_ur_part(&part).is_err(), "Length gate should reject");
         assert!(
             matches!(decode_bytes(&[part.clone()]), Err(QuantusUrError::UrError(_))),
             "Single-part UR beyond the message envelope should be rejected"
@@ -821,10 +794,14 @@ mod tests {
 
     #[test]
     fn test_multi_part_rejects_oversized_fragment_string() {
-        // A fragment string longer than any fragment this library encodes must be
-        // rejected by length, before its bytewords are allocated and decoded.
-        let payload = "ae".repeat(MAX_MULTI_PAYLOAD_LENGTH / 2 + 1);
-        let part = format!("ur:{}/1-2/{}", UR_TYPE, payload);
+        // CRC-valid bytewords two chars past the fragment envelope: without the
+        // gate `decode_ur_part` would allocate and return them, so only the gate
+        // can make this fail.
+        let oversized = vec![0u8; MAX_MULTI_PAYLOAD_LENGTH / 2 - 3];
+        let body = ur::bytewords::encode(&oversized, ur::bytewords::Style::Minimal);
+        assert!(body.len() > MAX_MULTI_PAYLOAD_LENGTH);
+        let part = format!("ur:{}/1-2/{}", UR_TYPE, body);
+        assert!(decode_ur_part(&part).is_err(), "Length gate should reject");
         assert!(
             matches!(decode_bytes(&[part.clone()]), Err(QuantusUrError::UrError(_))),
             "Oversized fragment string should be rejected"
@@ -834,12 +811,22 @@ mod tests {
 
     #[test]
     fn test_multi_part_max_fragment_length_within_string_gate() {
-        // The largest legitimate fragments (data chunks of MAX_FRAGMENT_LENGTH)
-        // must still pass the string-length gate.
-        let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        // A CBOR message that divides exactly into MAX_FRAGMENT_LENGTH chunks (5
+        // bytes of bytestring header), so the encoder emits its largest possible
+        // fragments — those strings must still clear the gate.
+        const FRAGMENTS: usize = 48;
+        let payload = vec![0x5a; MAX_FRAGMENT_LENGTH * FRAGMENTS - 5];
         let parts =
             encode_bytes_with_options(&payload, MAX_FRAGMENT_LENGTH).expect("Encoding failed");
-        assert!(parts.len() > 1, "Should be multi-part");
+        assert_eq!(parts.len(), FRAGMENTS, "Fragments should be maximum-size");
+        for part in &parts {
+            let body = part.rsplit_once('/').expect("multipart fragment").1;
+            assert!(
+                body.len() <= MAX_MULTI_PAYLOAD_LENGTH,
+                "Legitimate fragment of {} chars exceeds the gate",
+                body.len()
+            );
+        }
         assert_eq!(decode_bytes(&parts).expect("Decoding failed"), payload);
     }
 

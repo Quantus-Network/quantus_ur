@@ -2,6 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
+use quantus_ur::test_helpers::MAX_FRAGMENT_LENGTH;
 
 #[derive(Arbitrary, Debug)]
 struct Input {
@@ -14,7 +15,9 @@ struct Input {
 fuzz_target!(|input: Input| {
     let mut payload = input.payload;
     payload.truncate(64 * 1024);
-    let fragment_length = input.fragment_length as usize;
+    // Map into the encoder's accepted range; out-of-range lengths would reject
+    // almost every input before it reaches the round-trip.
+    let fragment_length = input.fragment_length as usize % MAX_FRAGMENT_LENGTH + 1;
 
     if let Ok(parts) = quantus_ur::encode_bytes_with_options(&payload, fragment_length) {
         let decoded = quantus_ur::decode_bytes(&parts).expect("roundtrip decode");

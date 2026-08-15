@@ -20,3 +20,5 @@ harness = false
 default = ["std"]
 std = ["ur-parse-lib/std"]
 core = ["ur-parse-lib/core"]
+# Exposes `test_helpers` to the out-of-workspace `fuzz/` targets.
+fuzzing = []

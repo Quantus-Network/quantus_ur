@@ -2,8 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-
-const UR_TYPE: &str = "quantus-sign-request";
+use quantus_ur::test_helpers::{craft_multipart_part, rewrite_ur_type, MAX_FRAGMENT_LENGTH};
 
 #[derive(Arbitrary, Debug)]
 enum ForeignType {
@@ -19,6 +18,7 @@ impl ForeignType {
             ForeignType::CryptoPsbt => "crypto-psbt",
             ForeignType::Bytes => "bytes",
             ForeignType::Empty => "",
+            // Case-insensitive prefix match: this one must still be accepted.
             ForeignType::Uppercase => "QUANTUS-SIGN-REQUEST",
         }
     }
@@ -49,82 +49,64 @@ struct Scenario {
     ops: Vec<Op>,
 }
 
-/// Mirrors the test helper in src/lib.rs: builds a multipart fragment carrying
-/// arbitrary fountain metadata, bypassing the encoder's bounds.
-fn craft_multipart_part(seq: u32, count: u32, msg_len: u32, checksum: u32, data: &[u8]) -> String {
-    let mut cbor = Vec::new();
-    minicbor::Encoder::new(&mut cbor)
-        .array(5)
-        .unwrap()
-        .u32(seq)
-        .unwrap()
-        .u32(count)
-        .unwrap()
-        .u32(msg_len)
-        .unwrap()
-        .u32(checksum)
-        .unwrap()
-        .bytes(data)
-        .unwrap();
-    let body = ur::bytewords::encode(&cbor, ur::bytewords::Style::Minimal);
-    format!("ur:{}/{}-{}/{}", UR_TYPE, seq, count, body)
+/// Every op addresses frames the same way, so an arbitrary `u8` always lands on
+/// a real frame instead of no-oping past the end of a short scan.
+fn frame(parts: &[String], part: u8) -> Option<usize> {
+    if parts.is_empty() {
+        None
+    } else {
+        Some(part as usize % parts.len())
+    }
 }
 
 fn apply(parts: &mut Vec<String>, op: &Op) {
     match op {
         Op::FlipChar { part, pos, ch } => {
-            if let Some(p) = parts.get_mut(*part as usize) {
-                let len = p.len();
-                if len > 0 {
-                    let i = *pos as usize % len;
-                    // Keep the result valid UTF-8 by replacing whole chars.
-                    if let Some((start, _)) = p.char_indices().nth(i % p.chars().count()) {
-                        let end = start + p[start..].chars().next().unwrap().len_utf8();
-                        let replacement = char::from_u32(0x20 + (*ch as u32 % 0x5F)).unwrap();
-                        p.replace_range(start..end, &replacement.to_string());
-                    }
-                }
+            let Some(i) = frame(parts, *part) else { return };
+            let p = &mut parts[i];
+            if p.is_empty() {
+                return;
             }
+            // Keep the result valid UTF-8 by replacing whole chars.
+            let n = p.chars().count();
+            let (start, c) = p.char_indices().nth(*pos as usize % n).unwrap();
+            let end = start + c.len_utf8();
+            let replacement = char::from_u32(0x20 + (*ch as u32 % 0x5F)).unwrap();
+            let mut buf = [0u8; 4];
+            p.replace_range(start..end, replacement.encode_utf8(&mut buf));
         }
         Op::Truncate { part, len } => {
-            if let Some(p) = parts.get_mut(*part as usize) {
-                let mut n = (*len as usize).min(p.len());
-                while !p.is_char_boundary(n) {
-                    n -= 1;
-                }
-                p.truncate(n);
+            let Some(i) = frame(parts, *part) else { return };
+            let p = &mut parts[i];
+            let mut n = (*len as usize).min(p.len());
+            while !p.is_char_boundary(n) {
+                n -= 1;
             }
+            p.truncate(n);
         }
         Op::Extend { part, extra } => {
-            if let Some(p) = parts.get_mut(*part as usize) {
-                p.push_str(&extra.chars().take(512).collect::<String>());
-            }
+            let Some(i) = frame(parts, *part) else { return };
+            parts[i].push_str(&extra.chars().take(512).collect::<String>());
         }
         Op::Duplicate { part } => {
-            if let Some(p) = parts.get(*part as usize) {
-                parts.push(p.clone());
-            }
+            let Some(i) = frame(parts, *part) else { return };
+            let clone = parts[i].clone();
+            parts.push(clone);
         }
         Op::Drop { part } => {
-            if !parts.is_empty() {
-                parts.remove(*part as usize % parts.len());
-            }
+            let Some(i) = frame(parts, *part) else { return };
+            parts.remove(i);
         }
         Op::Swap { a, b } => {
-            if !parts.is_empty() {
-                let i = *a as usize % parts.len();
-                let j = *b as usize % parts.len();
+            if let (Some(i), Some(j)) = (frame(parts, *a), frame(parts, *b)) {
                 parts.swap(i, j);
             }
         }
         Op::Reverse => parts.reverse(),
         Op::ChangeType { part, ty } => {
-            if let Some(p) = parts.get_mut(*part as usize) {
-                let lower = p.to_lowercase();
-                let prefix = format!("ur:{}/", UR_TYPE);
-                if let Some(body) = lower.strip_prefix(&prefix) {
-                    *p = format!("ur:{}/{}", ty.name(), body);
-                }
+            let Some(i) = frame(parts, *part) else { return };
+            if let Some(relabeled) = rewrite_ur_type(&parts[i], ty.name()) {
+                parts[i] = relabeled;
             }
         }
         Op::InjectPart { seq, count, msg_len, checksum, data } => {
@@ -139,13 +121,12 @@ fuzz_target!(|scenario: Scenario| {
     let mut payload = scenario.payload;
     payload.truncate(32 * 1024);
 
-    // Encode legitimately when the options allow; an invalid fragment length
-    // just starts the scenario from an empty frame list.
-    let mut parts = quantus_ur::encode_bytes_with_options(
-        &payload,
-        scenario.fragment_length as usize,
-    )
-    .unwrap_or_default();
+    // Map into the encoder's accepted range so scenarios start from a real
+    // multi-frame scan rather than an empty frame list. Fragment counts beyond
+    // the decoder's envelope are still rejected, leaving an empty list.
+    let fragment_length = scenario.fragment_length as usize % MAX_FRAGMENT_LENGTH + 1;
+    let mut parts =
+        quantus_ur::encode_bytes_with_options(&payload, fragment_length).unwrap_or_default();
 
     for op in scenario.ops.iter().take(64) {
         apply(&mut parts, op);

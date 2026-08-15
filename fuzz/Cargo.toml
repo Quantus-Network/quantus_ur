@@ -13,9 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 hex = "0.4.3"
-ur = { package = "keystone-ur", version = "0.1.1" }
-minicbor = { version = "0.19" }
-quantus_ur = { path = ".." }
+quantus_ur = { path = "..", features = ["fuzzing"] }
 
 [[bin]]
 name = "decode_parts"

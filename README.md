@@ -134,6 +134,7 @@ for the decoding attack surface (scanned QR fragments are untrusted input):
 Run with (AddressSanitizer is broken on some macOS versions, hence `--sanitizer none`):
 
 ```sh
+cargo install cargo-fuzz
 cargo fuzz run --sanitizer none moving_parts
 ```
 
