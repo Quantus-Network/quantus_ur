@@ -27,10 +27,13 @@ const MAX_FRAGMENT_COUNT: usize = 1024;
 /// Maximum size of a reconstructed CBOR message.
 const MAX_MESSAGE_LENGTH: usize = 200 * 1024;
 
-/// Bytewords length cap for a single-part body: MAX_MESSAGE_LENGTH bytes plus
-/// the 4-byte CRC-32, at 2 chars per byte. Checked before any allocation so an
-/// oversized single QR is rejected by length alone.
-const MAX_SINGLE_BODY_LENGTH: usize = 2 * (MAX_MESSAGE_LENGTH + 4);
+/// Bytewords length cap for a single-part body. A single-part UR carries the
+/// whole message in one fragment, and the encoder only emits one when the CBOR
+/// fits MAX_FRAGMENT_LENGTH, so bound it by the fragment envelope plus the
+/// 4-byte CRC-32 at 2 chars per byte — not by the far larger message envelope.
+/// Checked before any allocation, so an oversized single QR is rejected by
+/// length alone.
+const MAX_SINGLE_BODY_LENGTH: usize = 2 * (MAX_FRAGMENT_LENGTH + 4);
 
 /// Bytewords length cap for one multipart fragment: a CBOR part carrying a
 /// MAX_FRAGMENT_LENGTH data chunk plus its headers (64 bytes of slack, also
@@ -777,17 +780,25 @@ mod tests {
 
     #[test]
     fn test_single_part_rejects_oversized_body() {
-        // CRC-valid bytewords over a payload beyond the message envelope: the
-        // length gate must reject it before decoding.
-        let oversized = vec![0u8; MAX_MESSAGE_LENGTH + 1];
+        // The largest single-part UR the encoder can emit: its CBOR message
+        // fills a whole fragment (3 bytes of bytestring header).
+        let largest = vec![0x5a; MAX_FRAGMENT_LENGTH - 3];
+        let parts =
+            encode_bytes_with_options(&largest, MAX_FRAGMENT_LENGTH).expect("Encoding failed");
+        assert_eq!(parts.len(), 1, "Should be single part");
+        assert_eq!(parts[0].len() - UR_PREFIX.len(), MAX_SINGLE_BODY_LENGTH);
+        assert_eq!(decode_bytes(&parts).expect("Decoding failed"), largest);
+
+        // CRC-valid bytewords past that envelope: without the gate they decode
+        // cleanly, so the error proves it fired.
+        let oversized = vec![0u8; MAX_FRAGMENT_LENGTH + 1];
         let body = ur::bytewords::encode(&oversized, ur::bytewords::Style::Minimal);
         assert!(body.len() > MAX_SINGLE_BODY_LENGTH);
         let part = format!("ur:{}/{}", UR_TYPE, body);
-        // Without the gate these bytewords decode cleanly, so the error proves it fired.
         assert!(decode_ur_part(&part).is_err(), "Length gate should reject");
         assert!(
             matches!(decode_bytes(&[part.clone()]), Err(QuantusUrError::UrError(_))),
-            "Single-part UR beyond the message envelope should be rejected"
+            "Single-part UR beyond the fragment envelope should be rejected"
         );
         assert!(!is_complete(&[part]));
     }

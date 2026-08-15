@@ -110,9 +110,9 @@ library encodes, so scanned fragments cannot smuggle in foreign or oversized dat
 
 - Every fragment must carry the `ur:quantus-sign-request/` type prefix
 - Fragment strings are rejected by length before anything is allocated or decoded:
-  a single-part body may not exceed the 200 KiB message envelope, and a multipart
-  fragment payload may not exceed the 4096-byte fragment envelope (plus CBOR/CRC
-  overhead), so oversized QR codes error out instead of being decoded
+  every fragment, single- or multi-part, is capped at the 4096-byte fragment
+  envelope (plus CBOR/CRC overhead), so oversized QR codes error out instead of
+  being decoded
 - A single-part UR is only accepted when it is the only fragment supplied, so a stray
   single-part frame cannot short-circuit a multi-part scan
 - Multi-part fountain metadata (sequence, fragment count, message length, checksum,
@@ -134,7 +134,8 @@ for the decoding attack surface (scanned QR fragments are untrusted input):
 Run with (AddressSanitizer is broken on some macOS versions, hence `--sanitizer none`):
 
 ```sh
-cargo install cargo-fuzz
+# cargo-fuzz itself needs a newer rustc than the pinned nightly in rust-toolchain
+cargo +stable install cargo-fuzz --locked
 cargo fuzz run --sanitizer none moving_parts
 ```
 
