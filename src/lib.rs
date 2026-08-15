@@ -23,6 +23,16 @@ const MAX_FRAGMENT_COUNT: usize = 1024;
 /// Maximum size of a reconstructed CBOR message.
 const MAX_MESSAGE_LENGTH: usize = 200 * 1024;
 
+/// Bytewords length cap for a single-part body: MAX_MESSAGE_LENGTH bytes plus
+/// the 4-byte CRC-32, at 2 chars per byte. Checked before any allocation so an
+/// oversized single QR is rejected by length alone.
+const MAX_SINGLE_BODY_LENGTH: usize = 2 * (MAX_MESSAGE_LENGTH + 4);
+
+/// Bytewords length cap for one multipart fragment: a CBOR part carrying a
+/// MAX_FRAGMENT_LENGTH data chunk plus its headers (64 bytes of slack, also
+/// covering non-minimal integer encodings) and the 4-byte CRC-32.
+const MAX_MULTI_PAYLOAD_LENGTH: usize = 2 * (MAX_FRAGMENT_LENGTH + 64 + 4);
+
 fn ur_error(e: impl core::fmt::Display) -> QuantusUrError {
     QuantusUrError::UrError(e.to_string())
 }
@@ -130,11 +140,23 @@ fn decode_ur_part(part: &str) -> Result<(ur::ur::Kind, Vec<u8>), QuantusUrError>
     let body = &part[UR_PREFIX.len()..];
 
     match body.rsplit_once('/') {
-        None => Ok((
-            ur::ur::Kind::SinglePart,
-            decode_minimal_bytewords(body)?,
-        )),
+        None => {
+            if body.len() > MAX_SINGLE_BODY_LENGTH {
+                return Err(QuantusUrError::UrError(
+                    "Single-part UR exceeds supported bounds".to_string(),
+                ));
+            }
+            Ok((
+                ur::ur::Kind::SinglePart,
+                decode_minimal_bytewords(body)?,
+            ))
+        }
         Some((indices, payload)) => {
+            if payload.len() > MAX_MULTI_PAYLOAD_LENGTH {
+                return Err(QuantusUrError::UrError(
+                    "Multipart fragment exceeds supported bounds".to_string(),
+                ));
+            }
             let Some((index, index_total)) = indices.split_once('-') else {
                 return Err(QuantusUrError::UrError("Invalid indices".to_string()));
             };
@@ -781,6 +803,44 @@ mod tests {
             "Fragments larger than the encoding envelope should be rejected"
         );
         assert!(!is_complete(&malicious), "Oversized fragment should not be complete");
+    }
+
+    #[test]
+    fn test_single_part_rejects_oversized_body() {
+        // CRC-valid bytewords over a payload beyond the message envelope: the
+        // length gate must reject it before decoding.
+        let oversized = vec![0u8; MAX_MESSAGE_LENGTH + 1];
+        let body = ur::bytewords::encode(&oversized, ur::bytewords::Style::Minimal);
+        let part = format!("ur:{}/{}", UR_TYPE, body);
+        assert!(
+            matches!(decode_bytes(&[part.clone()]), Err(QuantusUrError::UrError(_))),
+            "Single-part UR beyond the message envelope should be rejected"
+        );
+        assert!(!is_complete(&[part]));
+    }
+
+    #[test]
+    fn test_multi_part_rejects_oversized_fragment_string() {
+        // A fragment string longer than any fragment this library encodes must be
+        // rejected by length, before its bytewords are allocated and decoded.
+        let payload = "ae".repeat(MAX_MULTI_PAYLOAD_LENGTH / 2 + 1);
+        let part = format!("ur:{}/1-2/{}", UR_TYPE, payload);
+        assert!(
+            matches!(decode_bytes(&[part.clone()]), Err(QuantusUrError::UrError(_))),
+            "Oversized fragment string should be rejected"
+        );
+        assert!(!is_complete(&[part]));
+    }
+
+    #[test]
+    fn test_multi_part_max_fragment_length_within_string_gate() {
+        // The largest legitimate fragments (data chunks of MAX_FRAGMENT_LENGTH)
+        // must still pass the string-length gate.
+        let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        let parts =
+            encode_bytes_with_options(&payload, MAX_FRAGMENT_LENGTH).expect("Encoding failed");
+        assert!(parts.len() > 1, "Should be multi-part");
+        assert_eq!(decode_bytes(&parts).expect("Decoding failed"), payload);
     }
 
     #[test]
