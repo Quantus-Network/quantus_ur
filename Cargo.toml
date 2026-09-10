@@ -1,7 +1,13 @@
 [package]
 name = "quantus_ur"
-version = "0.1.0"
+version = "1.6.0"
 edition = "2021"
+description = "Encode and decode Quantus sign requests as UR QR codes"
+license = "MIT"
+repository = "https://github.com/Quantus-Network/quantus_ur"
+readme = "README.md"
+categories = ["encoding"]
+keywords = ["cbor", "qr", "quantus", "ur"]
 
 [dependencies]
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }

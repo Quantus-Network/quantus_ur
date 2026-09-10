@@ -22,7 +22,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-quantus_ur = { git = "https://github.com/Quantus-Network/quantus_ur.git", tag = "1.0.0" }
+quantus_ur = "1.6.0"
 ```
 
 ## Requirements
