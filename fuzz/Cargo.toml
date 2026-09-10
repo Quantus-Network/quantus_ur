@@ -1,0 +1,37 @@
+[package]
+name = "quantus_ur-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+hex = "0.4.3"
+quantus_ur = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "decode_parts"
+path = "fuzz_targets/decode_parts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "moving_parts"
+path = "fuzz_targets/moving_parts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false
