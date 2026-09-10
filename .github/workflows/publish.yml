@@ -2,10 +2,6 @@ name: Publish to crates.io
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
-      - "[0-9]+.*"
 
 permissions:
   contents: read
@@ -23,5 +19,5 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         # `cargo publish` rewrites Cargo.lock while packaging; the tree is
-        # otherwise clean. Same flag as quantus-cli's publish job.
+        # otherwise clean. Same flag as the automated release publish job.
         run: cargo publish --allow-dirty --token "$CARGO_REGISTRY_TOKEN"

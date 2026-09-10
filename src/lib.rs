@@ -60,7 +60,11 @@ const fn build_crc32_table() -> [u32; 256] {
         let mut c = i as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         table[i] = c;
@@ -130,10 +134,7 @@ fn decode_ur_part(part: &str) -> Result<(ur::ur::Kind, Vec<u8>), QuantusUrError>
     let body = &part[UR_PREFIX.len()..];
 
     match body.rsplit_once('/') {
-        None => Ok((
-            ur::ur::Kind::SinglePart,
-            decode_minimal_bytewords(body)?,
-        )),
+        None => Ok((ur::ur::Kind::SinglePart, decode_minimal_bytewords(body)?)),
         Some((indices, payload)) => {
             let Some((index, index_total)) = indices.split_once('-') else {
                 return Err(QuantusUrError::UrError("Invalid indices".to_string()));
@@ -141,10 +142,7 @@ fn decode_ur_part(part: &str) -> Result<(ur::ur::Kind, Vec<u8>), QuantusUrError>
             if index.parse::<u16>().is_err() || index_total.parse::<u16>().is_err() {
                 return Err(QuantusUrError::UrError("Invalid indices".to_string()));
             }
-            Ok((
-                ur::ur::Kind::MultiPart,
-                decode_minimal_bytewords(payload)?,
-            ))
+            Ok((ur::ur::Kind::MultiPart, decode_minimal_bytewords(payload)?))
         }
     }
 }
@@ -456,7 +454,8 @@ mod tests {
             let decoded = decode_minimal_bytewords(&encoded).expect("decode");
             assert_eq!(decoded, vec![i as u8], "word index {i}");
             // Case-insensitivity: same result from uppercase input.
-            let decoded_upper = decode_minimal_bytewords(&encoded.to_ascii_uppercase()).expect("decode");
+            let decoded_upper =
+                decode_minimal_bytewords(&encoded.to_ascii_uppercase()).expect("decode");
             assert_eq!(decoded_upper, vec![i as u8], "word index {i} uppercase");
         }
     }
@@ -474,18 +473,18 @@ mod tests {
                 encode_bytes(&payload).expect("encode"),
                 encode_bytes_with_options(&payload, 700).expect("encode"),
             ] {
-            for part in &parts {
-                let lower = part.to_ascii_lowercase();
-                let expected = ur::ur::decode(&lower).expect("dependency decode");
-                let actual = decode_ur_part(&lower).expect("fast decode");
-                assert_eq!(expected.0, actual.0);
-                assert_eq!(expected.1, actual.1);
-                // The dependency requires lowercase; ours must accept the
-                // uppercase scan equally.
-                let actual_upper = decode_ur_part(part).expect("fast decode uppercase");
-                assert_eq!(expected.0, actual_upper.0);
-                assert_eq!(expected.1, actual_upper.1);
-            }
+                for part in &parts {
+                    let lower = part.to_ascii_lowercase();
+                    let expected = ur::ur::decode(&lower).expect("dependency decode");
+                    let actual = decode_ur_part(&lower).expect("fast decode");
+                    assert_eq!(expected.0, actual.0);
+                    assert_eq!(expected.1, actual.1);
+                    // The dependency requires lowercase; ours must accept the
+                    // uppercase scan equally.
+                    let actual_upper = decode_ur_part(part).expect("fast decode uppercase");
+                    assert_eq!(expected.0, actual_upper.0);
+                    assert_eq!(expected.1, actual_upper.1);
+                }
             }
         }
     }
@@ -498,7 +497,11 @@ mod tests {
         // Flip a character in the bytewords body: checksum must catch it.
         let mut corrupted = part.clone();
         let last = corrupted.len() - 1;
-        let flipped = if corrupted.as_bytes()[last] == b'a' { b'e' } else { b'a' };
+        let flipped = if corrupted.as_bytes()[last] == b'a' {
+            b'e'
+        } else {
+            b'a'
+        };
         corrupted.replace_range(last.., core::str::from_utf8(&[flipped]).unwrap());
         assert!(decode_ur_part(&corrupted).is_err());
 
@@ -539,7 +542,10 @@ mod tests {
         let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
         let encoded_parts = encode_hex(hex_payload).expect("Encoding failed");
         assert_eq!(encoded_parts.len(), 1, "Should be single part");
-        assert!(is_complete(&encoded_parts), "Single part should be complete");
+        assert!(
+            is_complete(&encoded_parts),
+            "Single part should be complete"
+        );
     }
 
     #[test]
@@ -550,7 +556,10 @@ mod tests {
         }
         let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
-        assert!(is_complete(&encoded_parts), "Complete multi-part should return true");
+        assert!(
+            is_complete(&encoded_parts),
+            "Complete multi-part should return true"
+        );
     }
 
     #[test]
@@ -561,15 +570,21 @@ mod tests {
         }
         let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
-        
+
         let incomplete_parts = &encoded_parts[..encoded_parts.len() - 1];
-        assert!(!is_complete(incomplete_parts), "Incomplete multi-part should return false");
+        assert!(
+            !is_complete(incomplete_parts),
+            "Incomplete multi-part should return false"
+        );
     }
 
     #[test]
     fn test_is_complete_invalid_ur() {
         let invalid_parts = vec!["not-a-valid-ur".to_string()];
-        assert!(!is_complete(&invalid_parts), "Invalid UR should return false");
+        assert!(
+            !is_complete(&invalid_parts),
+            "Invalid UR should return false"
+        );
     }
 
     #[test]
@@ -580,9 +595,12 @@ mod tests {
         }
         let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
-        
+
         let partial_parts = &encoded_parts[..1];
-        assert!(!is_complete(partial_parts), "Single part of multi-part should return false");
+        assert!(
+            !is_complete(partial_parts),
+            "Single part of multi-part should return false"
+        );
     }
 
     #[test]
@@ -615,14 +633,8 @@ mod tests {
         let parts_1500 = encode_bytes_with_options(&payload, 1500).expect("Encoding failed");
         assert_eq!(parts_1500.len(), 5, "7219 bytes at 1500 per fragment");
 
-        assert_eq!(
-            decode_bytes(&parts_700).expect("Decoding failed"),
-            payload
-        );
-        assert_eq!(
-            decode_bytes(&parts_1500).expect("Decoding failed"),
-            payload
-        );
+        assert_eq!(decode_bytes(&parts_700).expect("Decoding failed"), payload);
+        assert_eq!(decode_bytes(&parts_1500).expect("Decoding failed"), payload);
         assert!(is_complete(&parts_1500));
     }
 
@@ -717,7 +729,10 @@ mod tests {
             matches!(decode_bytes(&foreign), Err(QuantusUrError::UrError(_))),
             "Foreign UR type should be rejected"
         );
-        assert!(!is_complete(&foreign), "Foreign UR type should not be complete");
+        assert!(
+            !is_complete(&foreign),
+            "Foreign UR type should not be complete"
+        );
     }
 
     #[test]
@@ -754,33 +769,54 @@ mod tests {
             matches!(decode_bytes(&mixed_parts), Err(QuantusUrError::UrError(_))),
             "A foreign-type fragment must be rejected"
         );
-        assert!(!is_complete(&mixed_parts), "A foreign-type fragment must not be accepted");
+        assert!(
+            !is_complete(&mixed_parts),
+            "A foreign-type fragment must not be accepted"
+        );
     }
 
     #[test]
     fn test_multi_part_rejects_out_of_bounds_metadata() {
         // Tiny fragment claiming an enormous fragment count: the decoder must reject
         // it instead of sizing its work from attacker-supplied metadata.
-        let malicious = vec![craft_multipart_part(30_001, 30_000, 1, 0xdead_beef, &[0x41])];
+        let malicious = vec![craft_multipart_part(
+            30_001,
+            30_000,
+            1,
+            0xdead_beef,
+            &[0x41],
+        )];
 
         assert!(
             matches!(decode_bytes(&malicious), Err(QuantusUrError::UrError(_))),
             "Out-of-bounds fragment metadata should be rejected before decoding"
         );
-        assert!(!is_complete(&malicious), "Out-of-bounds fragment should not be complete");
+        assert!(
+            !is_complete(&malicious),
+            "Out-of-bounds fragment should not be complete"
+        );
     }
 
     #[test]
     fn test_multi_part_rejects_oversized_fragment_data() {
         let data = vec![0x41; MAX_FRAGMENT_LENGTH + 1];
         let message_length = data.len() as u32 * 2;
-        let malicious = vec![craft_multipart_part(1, 2, message_length, 0xdead_beef, &data)];
+        let malicious = vec![craft_multipart_part(
+            1,
+            2,
+            message_length,
+            0xdead_beef,
+            &data,
+        )];
 
         assert!(
             matches!(decode_bytes(&malicious), Err(QuantusUrError::UrError(_))),
             "Fragments larger than the encoding envelope should be rejected"
         );
-        assert!(!is_complete(&malicious), "Oversized fragment should not be complete");
+        assert!(
+            !is_complete(&malicious),
+            "Oversized fragment should not be complete"
+        );
     }
 
     #[test]
@@ -793,7 +829,10 @@ mod tests {
             matches!(decode_bytes(&parts), Err(QuantusUrError::UrError(_))),
             "Fragments describing different messages should be rejected"
         );
-        assert!(!is_complete(&parts), "Inconsistent fragments should not be complete");
+        assert!(
+            !is_complete(&parts),
+            "Inconsistent fragments should not be complete"
+        );
     }
 
     /// UR-encodes raw CBOR, mirroring `encode_internal` but without the canonical
@@ -834,7 +873,10 @@ mod tests {
 
         let largest = vec![0u8; MAX_MESSAGE_LENGTH - 8];
         let parts = encode_bytes(&largest).expect("Encoding failed");
-        assert!(parts.len() <= MAX_FRAGMENT_COUNT, "Should stay within the fragment bound");
+        assert!(
+            parts.len() <= MAX_FRAGMENT_COUNT,
+            "Should stay within the fragment bound"
+        );
         assert_eq!(decode_bytes(&parts).expect("Decoding failed"), largest);
     }
 
@@ -864,10 +906,10 @@ mod tests {
     fn test_decode_bytes_hex_equivalence() {
         let hex_payload = "0200007416854906f03a9dff66e3270a736c44e15970ac03a638471523a03069f276ca0700e876481755010000007400000002000000";
         let encoded_parts = encode_hex(hex_payload).expect("Encoding failed");
-        
+
         let decoded_hex = decode_hex(&encoded_parts).expect("Decoding failed");
         let decoded_bytes = decode_bytes(&encoded_parts).expect("Decoding failed");
-        
+
         assert_eq!(decoded_hex.to_lowercase(), hex_payload.to_lowercase());
         assert_eq!(hex::encode(&decoded_bytes), decoded_hex);
     }
