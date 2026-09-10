@@ -1,0 +1,12 @@
+name: Dependency cooldown
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-cooldown:
+    uses: Quantus-Network/shared-workflows/.github/workflows/dependency-cooldown.yml@v1

@@ -1,28 +1,33 @@
 [package]
-name = "quantus_ur"
-version = "1.6.0"
-edition = "2021"
-description = "Encode and decode Quantus sign requests as UR QR codes"
-license = "MIT"
-repository = "https://github.com/Quantus-Network/quantus_ur"
-readme = "README.md"
 categories = ["encoding"]
-keywords = ["cbor", "qr", "quantus", "ur"]
+description = "Encode and decode Quantus sign requests as UR QR codes"
+edition = "2021"
+keywords = [
+	"cbor",
+	"qr",
+	"quantus",
+	"ur",
+]
+license = "MIT"
+name = "quantus_ur"
+readme = "README.md"
+repository = "https://github.com/Quantus-Network/quantus_ur"
+version = "1.6.0"
 
 [dependencies]
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
-ur-parse-lib = { version = "1.0.6", default-features = false }
-ur = { package = "keystone-ur", version = "0.1.1", default-features = false }
 minicbor = { version = "0.19", default-features = false, features = ["alloc"] }
+ur = { package = "keystone-ur", version = "0.1.1", default-features = false }
+ur-parse-lib = { version = "1.0.6", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
-name = "decode"
 harness = false
+name = "decode"
 
 [features]
+core = ["ur-parse-lib/core"]
 default = ["std"]
 std = ["ur-parse-lib/std"]
-core = ["ur-parse-lib/core"]
