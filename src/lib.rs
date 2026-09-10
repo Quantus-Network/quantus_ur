@@ -5,7 +5,6 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use hex;
 use minicbor::{bytes::ByteVec, Decoder};
 use ur_parse_lib::keystone_ur_encoder::probe_encode;
 
@@ -158,9 +157,9 @@ pub enum QuantusUrError {
 impl core::fmt::Display for QuantusUrError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            QuantusUrError::HexError(e) => write!(f, "Hex decoding error: {}", e),
-            QuantusUrError::UrError(msg) => write!(f, "UR error: {}", msg),
-            QuantusUrError::CborError(msg) => write!(f, "CBOR error: {}", msg),
+            QuantusUrError::HexError(e) => write!(f, "Hex decoding error: {e}"),
+            QuantusUrError::UrError(msg) => write!(f, "UR error: {msg}"),
+            QuantusUrError::CborError(msg) => write!(f, "CBOR error: {msg}"),
             QuantusUrError::Incomplete => write!(f, "Decoding incomplete"),
         }
     }
@@ -517,7 +516,7 @@ mod tests {
         // 250 bytes of data
         let mut large_payload = String::with_capacity(500);
         for i in 0..250 {
-            large_payload.push_str(&format!("{:02x}", i));
+            large_payload.push_str(&format!("{i:02x}"));
         }
 
         let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
@@ -552,7 +551,7 @@ mod tests {
     fn test_is_complete_multi_part_complete() {
         let mut large_payload = String::with_capacity(500);
         for i in 0..250 {
-            large_payload.push_str(&format!("{:02x}", i));
+            large_payload.push_str(&format!("{i:02x}"));
         }
         let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
@@ -566,7 +565,7 @@ mod tests {
     fn test_is_complete_multi_part_incomplete() {
         let mut large_payload = String::with_capacity(500);
         for i in 0..250 {
-            large_payload.push_str(&format!("{:02x}", i));
+            large_payload.push_str(&format!("{i:02x}"));
         }
         let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
@@ -591,7 +590,7 @@ mod tests {
     fn test_is_complete_multi_part_partial() {
         let mut large_payload = String::with_capacity(500);
         for i in 0..250 {
-            large_payload.push_str(&format!("{:02x}", i));
+            large_payload.push_str(&format!("{i:02x}"));
         }
         let encoded_parts = encode_hex(&large_payload).expect("Encoding failed");
         assert!(encoded_parts.len() > 1, "Should be multi-part");
@@ -681,11 +680,11 @@ mod tests {
     /// substituting a foreign UR into a scan would.
     fn rewrite_ur_type(part: &str, new_type: &str) -> String {
         let lower = part.to_lowercase();
-        let prefix = format!("ur:{}/", UR_TYPE);
+        let prefix = format!("ur:{UR_TYPE}/");
         let body = lower
             .strip_prefix(&prefix)
             .expect("encoded part must use the quantus UR type");
-        format!("ur:{}/{}", new_type, body)
+        format!("ur:{new_type}/{body}")
     }
 
     /// Builds a multipart fragment with arbitrary fountain metadata, bypassing the
@@ -713,7 +712,7 @@ mod tests {
             .unwrap();
 
         let body = ur::bytewords::encode(&cbor, ur::bytewords::Style::Minimal);
-        format!("ur:{}/{}-{}/{}", UR_TYPE, sequence, sequence_count, body)
+        format!("ur:{UR_TYPE}/{sequence}-{sequence_count}/{body}")
     }
 
     fn multi_part_payload() -> Vec<u8> {
