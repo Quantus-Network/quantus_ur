@@ -33,7 +33,7 @@ jobs:
         id: extract_version
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          IS_DRAFT: ${{ contains(github.event.pull_request.labels.*.name, 'draft-release') }}
         run: |
           VERSION=$(echo "$PR_TITLE" | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+')
           if [ -z "$VERSION" ]; then
@@ -42,7 +42,7 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          if [[ ",$PR_LABELS," == *",draft-release,"* ]]; then
+          if [[ "$IS_DRAFT" == "true" ]]; then
             echo "is_draft=true" >> $GITHUB_OUTPUT
           else
             echo "is_draft=false" >> $GITHUB_OUTPUT
